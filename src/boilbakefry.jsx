@@ -1,0 +1,2594 @@
+import React, { useState, useEffect } from 'react';
+import { Search, Plus, ChefHat, Clock, Users, BookOpen, X, LogOut } from 'lucide-react';
+
+// REPLACE THESE WITH YOUR SUPABASE KEYS
+const SUPABASE_URL = 'https://tkwpaqauxtpvflzpydfn.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_wqdL1DZi_PLDobVHgvKBlA_PFIitS4j';
+
+// Simple Supabase client (no npm package needed)
+class SupabaseClient {
+  constructor(url, key) {
+    this.url = url;
+    this.key = key;
+    this.headers = {
+      'apikey': key,
+      'Content-Type': 'application/json',
+    };
+  }
+
+  async signUp(email, password) {
+    const response = await fetch(`${this.url}/auth/v1/signup`, {
+      method: 'POST',
+      headers: this.headers,
+      body: JSON.stringify({ email, password })
+    });
+    return await response.json();
+  }
+
+  async signIn(email, password) {
+    const response = await fetch(`${this.url}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: this.headers,
+      body: JSON.stringify({ email, password })
+    });
+    return await response.json();
+  }
+
+  async signOut(accessToken) {
+    const response = await fetch(`${this.url}/auth/v1/logout`, {
+      method: 'POST',
+      headers: {
+        ...this.headers,
+        'Authorization': `Bearer ${accessToken}`
+      }
+    });
+    return await response.json();
+  }
+
+  async getUser(accessToken) {
+    const response = await fetch(`${this.url}/auth/v1/user`, {
+      headers: {
+        ...this.headers,
+        'Authorization': `Bearer ${accessToken}`
+      }
+    });
+    return await response.json();
+  }
+
+  async isAdmin(email, accessToken) {
+    const response = await fetch(
+      `${this.url}/rest/v1/admins?email=eq.${email}`,
+      {
+        headers: {
+          ...this.headers,
+          'Authorization': `Bearer ${accessToken}`
+        }
+      }
+    );
+    const data = await response.json();
+    return data.length > 0;
+  }
+}
+
+const supabase = new SupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const BoilBakeFry = () => {
+  const [recipes, setRecipes] = useState([]);
+  const [pendingRecipes, setPendingRecipes] = useState([]);
+  const [view, setView] = useState('home');
+  const [selectedRecipe, setSelectedRecipe] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSubmitForm, setShowSubmitForm] = useState(false);
+  const [showSuccessMessage, setShowSuccessMessage] = useState(false);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  
+  // Supabase Auth State
+  const [user, setUser] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showLoginForm, setShowLoginForm] = useState(false);
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  
+  // AI Recipe Assistant State
+  const [showAIReview, setShowAIReview] = useState(false);
+  const [aiReviewResults, setAIReviewResults] = useState(null);
+  const [isReviewingRecipe, setIsReviewingRecipe] = useState(false);
+  const [aiHints, setAIHints] = useState({});
+  
+  // Stock Photo State
+  const [suggestedPhotos, setSuggestedPhotos] = useState([]);
+  const [showStockPhotos, setShowStockPhotos] = useState(false);
+  const [isLoadingPhotos, setIsLoadingPhotos] = useState(false);
+  const [manualSearchQuery, setManualSearchQuery] = useState('');
+  
+  const [formData, setFormData] = useState({
+    title: '',
+    story: '',
+    prepTime: '',
+    cookTime: '',
+    servings: '',
+    ingredients: '',
+    instructions: '',
+    tags: '',
+    author: '',
+    photo: null,
+    email: ''
+  });
+
+  // Load recipes from storage on mount
+  useEffect(() => {
+    const loadRecipes = async () => {
+      try {
+        const result = await window.storage.get('recipes-collection');
+        if (result && result.value) {
+          setRecipes(JSON.parse(result.value));
+        }
+      } catch (error) {
+        console.log('No existing recipes found, starting fresh');
+      }
+
+      try {
+        const pendingResult = await window.storage.get('pending-recipes');
+        if (pendingResult && pendingResult.value) {
+          setPendingRecipes(JSON.parse(pendingResult.value));
+        }
+      } catch (error) {
+        console.log('No pending recipes');
+      }
+    };
+    loadRecipes();
+
+    // Check for existing session
+    const checkSession = async () => {
+      const savedSession = localStorage.getItem('supabase_session');
+      if (savedSession) {
+        try {
+          const session = JSON.parse(savedSession);
+          const userData = await supabase.getUser(session.access_token);
+          if (userData.email) {
+            setUser(userData);
+            const adminStatus = await supabase.isAdmin(userData.email, session.access_token);
+            setIsAdmin(adminStatus);
+          } else {
+            localStorage.removeItem('supabase_session');
+          }
+        } catch (error) {
+          console.error('Session check failed:', error);
+          localStorage.removeItem('supabase_session');
+        }
+      }
+    };
+    checkSession();
+  }, []);
+
+  // Auto-suggest photos when title changes
+  useEffect(() => {
+    if (formData.title && formData.title.length > 3 && showSubmitForm) {
+      const timer = setTimeout(() => {
+        fetchStockPhotos(formData.title);
+      }, 2000); // Wait 2 seconds after user stops typing
+      
+      return () => clearTimeout(timer);
+    }
+  }, [formData.title, showSubmitForm]);
+
+  // Save recipes to storage whenever they change
+  const saveRecipes = async (updatedRecipes) => {
+    try {
+      await window.storage.set('recipes-collection', JSON.stringify(updatedRecipes));
+      setRecipes(updatedRecipes);
+    } catch (error) {
+      console.error('Error saving recipes:', error);
+    }
+  };
+
+  const savePendingRecipes = async (updatedPending) => {
+    try {
+      await window.storage.set('pending-recipes', JSON.stringify(updatedPending));
+      setPendingRecipes(updatedPending);
+    } catch (error) {
+      console.error('Error saving pending recipes:', error);
+    }
+  };
+
+  const trackEvent = async (eventType, metadata = {}) => {
+    try {
+      const event = {
+        type: eventType,
+        timestamp: new Date().toISOString(),
+        ...metadata
+      };
+      
+      const analyticsResult = await window.storage.get('analytics-events');
+      const events = analyticsResult && analyticsResult.value ? JSON.parse(analyticsResult.value) : [];
+      events.push(event);
+      await window.storage.set('analytics-events', JSON.stringify(events));
+    } catch (error) {
+      console.error('Error tracking event:', error);
+    }
+  };
+
+  const handlePhotoUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setFormData({...formData, photo: reader.result});
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleAdminToggle = () => {
+    if (isAdmin) {
+      // Already logged in as admin, toggle panel
+      setShowAdminPanel(!showAdminPanel);
+    } else {
+      // Not admin, show login form
+      setShowLoginForm(true);
+    }
+  };
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setLoginError('');
+
+    try {
+      const response = await supabase.signIn(loginEmail, loginPassword);
+      
+      if (response.error) {
+        setLoginError(response.error.message || 'Invalid email or password');
+        setIsLoading(false);
+        return;
+      }
+
+      if (response.access_token) {
+        // Save session
+        localStorage.setItem('supabase_session', JSON.stringify(response));
+        
+        // Get user data
+        const userData = await supabase.getUser(response.access_token);
+        setUser(userData);
+
+        // Check if user is admin
+        const adminStatus = await supabase.isAdmin(userData.email, response.access_token);
+        
+        if (adminStatus) {
+          setIsAdmin(true);
+          setShowAdminPanel(true);
+          setShowLoginForm(false);
+          setLoginEmail('');
+          setLoginPassword('');
+        } else {
+          setLoginError('You do not have admin privileges');
+          localStorage.removeItem('supabase_session');
+        }
+      }
+    } catch (error) {
+      setLoginError('Login failed. Please try again.');
+      console.error('Login error:', error);
+    }
+    
+    setIsLoading(false);
+  };
+
+  const handleLogout = async () => {
+    try {
+      const savedSession = localStorage.getItem('supabase_session');
+      if (savedSession) {
+        const session = JSON.parse(savedSession);
+        await supabase.signOut(session.access_token);
+      }
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+    
+    localStorage.removeItem('supabase_session');
+    setUser(null);
+    setIsAdmin(false);
+    setShowAdminPanel(false);
+  };
+
+  // AI Recipe Assistant Functions
+  const reviewRecipeWithAI = async () => {
+    setIsReviewingRecipe(true);
+    setShowAIReview(true);
+
+    try {
+      const prompt = `You are a recipe writing coach for BoilBakeFry, a recipe sharing platform that values storytelling and detailed, precise instructions.
+
+Review this recipe submission and provide constructive feedback:
+
+**Title:** ${formData.title || '[Not provided]'}
+**Author:** ${formData.author || '[Not provided]'}
+**Story:** ${formData.story || '[Not provided]'}
+**Prep Time:** ${formData.prepTime || '[Not provided]'} minutes
+**Cook Time:** ${formData.cookTime || '[Not provided]'} minutes
+**Servings:** ${formData.servings || '[Not provided]'}
+**Ingredients:**
+${formData.ingredients || '[Not provided]'}
+
+**Instructions:**
+${formData.instructions || '[Not provided]'}
+
+**Tags:** ${formData.tags || '[Not provided]'}
+
+Analyze this recipe and provide:
+1. Overall score (0-100)
+2. Specific strengths (2-3 points)
+3. Specific improvements needed (2-4 points with examples)
+4. Story enhancement suggestions (if story is weak)
+5. Instruction clarity issues (be specific about which steps need detail)
+
+Format your response as JSON:
+{
+  "score": number,
+  "strengths": ["strength 1", "strength 2"],
+  "improvements": [
+    {"field": "title/story/ingredients/instructions", "issue": "description", "suggestion": "specific improvement"},
+  ],
+  "storyTips": "suggestion for better storytelling",
+  "overallFeedback": "encouraging summary"
+}`;
+
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 2000,
+          messages: [
+            { role: "user", content: prompt }
+          ],
+        })
+      });
+
+      const data = await response.json();
+      const reviewText = data.content.find(c => c.type === 'text')?.text || '';
+      
+      // Extract JSON from response
+      const jsonMatch = reviewText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const review = JSON.parse(jsonMatch[0]);
+        setAIReviewResults(review);
+      } else {
+        setAIReviewResults({
+          score: 75,
+          strengths: ["Recipe submitted"],
+          improvements: [{field: "general", issue: "Review complete", suggestion: "Consider the suggestions above"}],
+          storyTips: reviewText,
+          overallFeedback: "Good start! Review the suggestions above."
+        });
+      }
+    } catch (error) {
+      console.error('AI Review error:', error);
+      setAIReviewResults({
+        score: 70,
+        strengths: ["Recipe received"],
+        improvements: [{field: "general", issue: "Unable to complete full review", suggestion: "Please ensure all fields are filled out"}],
+        overallFeedback: "Please review your recipe for completeness and try again."
+      });
+    }
+
+    setIsReviewingRecipe(false);
+  };
+
+  const getFieldHint = (fieldName) => {
+    const hints = {
+      title: "Make it specific! Include the main ingredient or cooking style. Examples: 'Grandma's Sunday Pot Roast' or 'Quick Weeknight Pad Thai'",
+      story: "Share the origin, a memory, or what makes this recipe special. Paint a picture with sensory details - sounds, smells, textures.",
+      ingredients: "Be specific with quantities and preparation. Example: '2 medium onions, finely diced' instead of 'onions'",
+      instructions: "Include temperatures, times, and visual cues. Example: 'Bake at 350°F for 25-30 minutes until golden brown' instead of 'bake until done'",
+      prepTime: "How long to prep ingredients before cooking starts? Be realistic.",
+      cookTime: "Active cooking time on stove/in oven. Don't include prep time here.",
+      tags: "Help others find your recipe! Include cuisine type, meal type, dietary info, key ingredients."
+    };
+    return hints[fieldName] || '';
+  };
+
+  const applyAISuggestion = (suggestion) => {
+    // Helper to apply suggestions to form
+    if (suggestion.field === 'title' && suggestion.example) {
+      setFormData({...formData, title: suggestion.example});
+    }
+    // Can expand this for other fields
+  };
+
+  // Stock Photo Functions
+  const fetchStockPhotos = async (query, isManualSearch = false) => {
+    if (!query || query.trim().length < 2) return;
+    
+    setIsLoadingPhotos(true);
+    
+    try {
+      // Unsplash API - using public access
+      const cleanQuery = encodeURIComponent(query.trim());
+      const response = await fetch(
+        `https://api.unsplash.com/search/photos?query=${cleanQuery}+food&per_page=9&orientation=landscape`,
+        {
+          headers: {
+            'Authorization': 'Client-ID kKLbea3zC2lHWp0vN_2CsYEGDk5KXsH4r_rXYQ-Ig2k'
+          }
+        }
+      );
+      
+      const data = await response.json();
+      
+      if (data.results && data.results.length > 0) {
+        setSuggestedPhotos(data.results);
+        if (isManualSearch) {
+          setShowStockPhotos(true);
+        }
+      } else {
+        // Fallback: try generic food search
+        const fallbackResponse = await fetch(
+          `https://api.unsplash.com/search/photos?query=food+delicious&per_page=9&orientation=landscape`,
+          {
+            headers: {
+              'Authorization': 'Client-ID kKLbea3zC2lHWp0vN_2CsYEGDk5KXsH4r_rXYQ-Ig2k'
+            }
+          }
+        );
+        const fallbackData = await fallbackResponse.json();
+        setSuggestedPhotos(fallbackData.results || []);
+      }
+    } catch (error) {
+      console.error('Error fetching stock photos:', error);
+      setSuggestedPhotos([]);
+    }
+    
+    setIsLoadingPhotos(false);
+  };
+
+  const selectStockPhoto = (photo) => {
+    // Convert to base64 for consistency with uploaded photos
+    fetch(photo.urls.regular)
+      .then(res => res.blob())
+      .then(blob => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          setFormData({
+            ...formData, 
+            photo: reader.result,
+            photoCredit: `Photo by ${photo.user.name} on Unsplash`,
+            photoUrl: photo.links.html
+          });
+          setShowStockPhotos(false);
+        };
+        reader.readAsDataURL(blob);
+      })
+      .catch(err => {
+        console.error('Error loading photo:', err);
+        // Fallback: use URL directly
+        setFormData({
+          ...formData,
+          photo: photo.urls.regular,
+          photoCredit: `Photo by ${photo.user.name} on Unsplash`,
+          photoUrl: photo.links.html
+        });
+        setShowStockPhotos(false);
+      });
+  };
+
+  const handleManualPhotoSearch = () => {
+    if (manualSearchQuery.trim()) {
+      fetchStockPhotos(manualSearchQuery, true);
+    }
+  };
+
+  const approveRecipe = async (recipe) => {
+    const updatedPending = pendingRecipes.filter(r => r.id !== recipe.id);
+    await savePendingRecipes(updatedPending);
+    
+    const approvedRecipe = { ...recipe, status: 'approved', approvedAt: new Date().toISOString() };
+    delete approvedRecipe.email; // Remove email before making public
+    
+    const updatedRecipes = [...recipes, approvedRecipe];
+    await saveRecipes(updatedRecipes);
+    await trackEvent('recipe_approved', { recipeId: recipe.id, title: recipe.title });
+  };
+
+  const rejectRecipe = async (recipeId) => {
+    const updatedPending = pendingRecipes.filter(r => r.id !== recipeId);
+    await savePendingRecipes(updatedPending);
+    await trackEvent('recipe_rejected', { recipeId });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const newRecipe = {
+      id: Date.now().toString(),
+      ...formData,
+      ingredients: formData.ingredients.split('\n').filter(i => i.trim()),
+      instructions: formData.instructions.split('\n').filter(i => i.trim()),
+      tags: formData.tags.split(',').map(t => t.trim()).filter(t => t),
+      createdAt: new Date().toISOString(),
+      status: 'pending'
+    };
+    
+    const updatedPending = [...pendingRecipes, newRecipe];
+    await savePendingRecipes(updatedPending);
+    await trackEvent('recipe_submitted', { recipeId: newRecipe.id, title: newRecipe.title });
+    
+    setFormData({
+      title: '', story: '', prepTime: '', cookTime: '', servings: '',
+      ingredients: '', instructions: '', tags: '', author: '', photo: null, email: ''
+    });
+    setShowSubmitForm(false);
+    setShowSuccessMessage(true);
+    setTimeout(() => setShowSuccessMessage(false), 5000);
+  };
+
+  const filteredRecipes = recipes.filter(recipe =>
+    recipe.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    recipe.tags.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase())) ||
+    recipe.story.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const RecipeCard = ({ recipe }) => (
+    <div 
+      onClick={() => {
+        setSelectedRecipe(recipe);
+        setView('detail');
+        trackEvent('recipe_viewed', { recipeId: recipe.id, title: recipe.title });
+      }}
+      className="recipe-card"
+    >
+      {recipe.photo && (
+        <div className="recipe-card-image">
+          <img src={recipe.photo} alt={recipe.title} />
+        </div>
+      )}
+      <div className="recipe-card-content">
+        <h3>{recipe.title}</h3>
+        <p className="story-preview">{recipe.story.substring(0, 120)}...</p>
+        <div className="recipe-meta">
+          <span><Clock size={14} /> {recipe.prepTime + recipe.cookTime} min</span>
+          <span><Users size={14} /> {recipe.servings}</span>
+        </div>
+        <div className="tags">
+          {recipe.tags.map((tag, i) => (
+            <span key={i} className="tag">{tag}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="app">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@300;400;600&family=Karla:wght@400;500;600&display=swap');
+
+        * {
+          margin: 0;
+          padding: 0;
+          box-sizing: border-box;
+        }
+
+        body {
+          font-family: 'Karla', sans-serif;
+          background: #fafaf8;
+          color: #1a1a1a;
+        }
+
+        .app {
+          min-height: 100vh;
+        }
+
+        /* Header */
+        .header {
+          background: white;
+          border-bottom: 1px solid #e8e6e1;
+          position: sticky;
+          top: 0;
+          z-index: 100;
+        }
+
+        .header-content {
+          max-width: 1200px;
+          margin: 0 auto;
+          padding: 0 24px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          height: 80px;
+        }
+
+        .logo {
+          font-family: 'Crimson Pro', serif;
+          font-size: 28px;
+          font-weight: 600;
+          color: #8b3a3a;
+          cursor: pointer;
+          letter-spacing: -0.5px;
+        }
+
+        .nav {
+          display: flex;
+          gap: 32px;
+          align-items: center;
+        }
+
+        .nav button {
+          background: none;
+          border: none;
+          font-family: 'Karla', sans-serif;
+          font-size: 15px;
+          color: #1a1a1a;
+          cursor: pointer;
+          padding: 8px 0;
+          position: relative;
+          transition: color 0.2s;
+        }
+
+        .nav button:hover {
+          color: #8b3a3a;
+        }
+
+        .nav button.active::after {
+          content: '';
+          position: absolute;
+          bottom: 0;
+          left: 0;
+          right: 0;
+          height: 2px;
+          background: #8b3a3a;
+        }
+
+        .submit-btn {
+          background: #8b3a3a !important;
+          color: white !important;
+          padding: 10px 20px !important;
+          border-radius: 4px;
+          font-weight: 500;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          transition: background 0.2s;
+        }
+
+        .submit-btn:hover {
+          background: #6f2e2e !important;
+        }
+
+        /* Hero Section */
+        .hero {
+          background: linear-gradient(135deg, #f8f5f0 0%, #ffffff 100%);
+          padding: 80px 24px;
+          text-align: center;
+          border-bottom: 1px solid #e8e6e1;
+        }
+
+        .hero h1 {
+          font-family: 'Crimson Pro', serif;
+          font-size: 56px;
+          font-weight: 600;
+          color: #1a1a1a;
+          margin-bottom: 16px;
+          letter-spacing: -1px;
+        }
+
+        .hero p {
+          font-size: 18px;
+          color: #666;
+          max-width: 600px;
+          margin: 0 auto 40px;
+          line-height: 1.6;
+        }
+
+        .search-bar {
+          max-width: 500px;
+          margin: 0 auto;
+          position: relative;
+        }
+
+        .search-bar input {
+          width: 100%;
+          padding: 16px 48px 16px 20px;
+          border: 2px solid #e8e6e1;
+          border-radius: 8px;
+          font-size: 16px;
+          font-family: 'Karla', sans-serif;
+          transition: border-color 0.2s;
+        }
+
+        .search-bar input:focus {
+          outline: none;
+          border-color: #8b3a3a;
+        }
+
+        .search-icon {
+          position: absolute;
+          right: 16px;
+          top: 50%;
+          transform: translateY(-50%);
+          color: #999;
+        }
+
+        /* Recipe Grid */
+        .recipes-container {
+          max-width: 1200px;
+          margin: 0 auto;
+          padding: 60px 24px;
+        }
+
+        .recipes-header {
+          margin-bottom: 40px;
+        }
+
+        .recipes-header h2 {
+          font-family: 'Crimson Pro', serif;
+          font-size: 36px;
+          font-weight: 600;
+          color: #1a1a1a;
+          margin-bottom: 8px;
+        }
+
+        .recipes-count {
+          color: #666;
+          font-size: 15px;
+        }
+
+        .recipes-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+          gap: 32px;
+        }
+
+        .recipe-card {
+          background: white;
+          border: 1px solid #e8e6e1;
+          border-radius: 8px;
+          overflow: hidden;
+          cursor: pointer;
+          transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .recipe-card:hover {
+          transform: translateY(-4px);
+          box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+        }
+
+        .recipe-card-image {
+          width: 100%;
+          height: 240px;
+          overflow: hidden;
+          background: #f4f2ed;
+        }
+
+        .recipe-card-image img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          transition: transform 0.3s;
+        }
+
+        .recipe-card:hover .recipe-card-image img {
+          transform: scale(1.05);
+        }
+
+        .recipe-card-content {
+          padding: 24px;
+        }
+
+        .recipe-card h3 {
+          font-family: 'Crimson Pro', serif;
+          font-size: 24px;
+          font-weight: 600;
+          color: #1a1a1a;
+          margin-bottom: 12px;
+          line-height: 1.3;
+        }
+
+        .story-preview {
+          color: #666;
+          font-size: 15px;
+          line-height: 1.6;
+          margin-bottom: 16px;
+        }
+
+        .recipe-meta {
+          display: flex;
+          gap: 20px;
+          margin-bottom: 12px;
+          font-size: 14px;
+          color: #999;
+        }
+
+        .recipe-meta span {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .tags {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+
+        .tag {
+          background: #f4f2ed;
+          color: #666;
+          padding: 4px 12px;
+          border-radius: 16px;
+          font-size: 13px;
+        }
+
+        /* Recipe Detail */
+        .recipe-detail {
+          max-width: 800px;
+          margin: 0 auto;
+          padding: 60px 24px;
+        }
+
+        .recipe-detail-image {
+          width: 100%;
+          height: 400px;
+          border-radius: 12px;
+          overflow: hidden;
+          margin-bottom: 32px;
+        }
+
+        .recipe-detail-image img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+        }
+
+        .back-btn {
+          background: none;
+          border: none;
+          color: #8b3a3a;
+          font-size: 15px;
+          cursor: pointer;
+          margin-bottom: 32px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .recipe-detail h1 {
+          font-family: 'Crimson Pro', serif;
+          font-size: 48px;
+          font-weight: 600;
+          color: #1a1a1a;
+          margin-bottom: 16px;
+          line-height: 1.2;
+        }
+
+        .recipe-detail .author {
+          color: #999;
+          font-size: 15px;
+          margin-bottom: 32px;
+        }
+
+        .recipe-detail .story {
+          font-size: 18px;
+          line-height: 1.8;
+          color: #333;
+          margin-bottom: 40px;
+          font-style: italic;
+          border-left: 3px solid #8b3a3a;
+          padding-left: 24px;
+        }
+
+        .recipe-info {
+          display: flex;
+          gap: 32px;
+          padding: 24px 0;
+          border-top: 1px solid #e8e6e1;
+          border-bottom: 1px solid #e8e6e1;
+          margin-bottom: 40px;
+        }
+
+        .info-item {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          color: #666;
+        }
+
+        .recipe-section {
+          margin-bottom: 40px;
+        }
+
+        .recipe-section h2 {
+          font-family: 'Crimson Pro', serif;
+          font-size: 28px;
+          font-weight: 600;
+          color: #1a1a1a;
+          margin-bottom: 20px;
+        }
+
+        .recipe-section ul {
+          list-style: none;
+        }
+
+        .recipe-section li {
+          padding: 12px 0;
+          border-bottom: 1px solid #f4f2ed;
+          line-height: 1.6;
+        }
+
+        .recipe-section ol {
+          counter-reset: step;
+          list-style: none;
+        }
+
+        .recipe-section ol li {
+          counter-increment: step;
+          padding: 20px 0 20px 48px;
+          position: relative;
+          border-bottom: 1px solid #f4f2ed;
+        }
+
+        .recipe-section ol li::before {
+          content: counter(step);
+          position: absolute;
+          left: 0;
+          top: 20px;
+          width: 32px;
+          height: 32px;
+          background: #8b3a3a;
+          color: white;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: 600;
+          font-size: 14px;
+        }
+
+        /* Submit Form */
+        .form-overlay {
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(0,0,0,0.5);
+          z-index: 200;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 24px;
+        }
+
+        .form-container {
+          background: white;
+          border-radius: 12px;
+          max-width: 700px;
+          width: 100%;
+          max-height: 90vh;
+          overflow-y: auto;
+          position: relative;
+        }
+
+        .form-header {
+          padding: 32px 32px 24px;
+          border-bottom: 1px solid #e8e6e1;
+          position: sticky;
+          top: 0;
+          background: white;
+          z-index: 1;
+        }
+
+        .form-header h2 {
+          font-family: 'Crimson Pro', serif;
+          font-size: 32px;
+          font-weight: 600;
+          color: #1a1a1a;
+          margin-bottom: 8px;
+        }
+
+        .close-btn {
+          position: absolute;
+          top: 32px;
+          right: 32px;
+          background: none;
+          border: none;
+          cursor: pointer;
+          color: #999;
+          transition: color 0.2s;
+        }
+
+        .close-btn:hover {
+          color: #1a1a1a;
+        }
+
+        .guidelines {
+          background: #f8f5f0;
+          padding: 20px;
+          border-radius: 8px;
+          margin-bottom: 24px;
+          font-size: 14px;
+          line-height: 1.6;
+        }
+
+        .guidelines h3 {
+          font-family: 'Crimson Pro', serif;
+          font-size: 18px;
+          font-weight: 600;
+          color: #1a1a1a;
+          margin-bottom: 12px;
+        }
+
+        .guidelines ul {
+          margin-left: 20px;
+          color: #666;
+        }
+
+        .guidelines li {
+          margin-bottom: 8px;
+        }
+
+        .form-content {
+          padding: 32px;
+        }
+
+        .form-group {
+          margin-bottom: 24px;
+        }
+
+        .form-group label {
+          display: block;
+          font-weight: 500;
+          color: #1a1a1a;
+          margin-bottom: 8px;
+          font-size: 15px;
+        }
+
+        .form-group input,
+        .form-group textarea {
+          width: 100%;
+          padding: 12px;
+          border: 2px solid #e8e6e1;
+          border-radius: 6px;
+          font-family: 'Karla', sans-serif;
+          font-size: 15px;
+          transition: border-color 0.2s;
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus {
+          outline: none;
+          border-color: #8b3a3a;
+        }
+
+        .form-group textarea {
+          resize: vertical;
+          min-height: 100px;
+        }
+
+        .form-row {
+          display: grid;
+          grid-template-columns: 1fr 1fr 1fr;
+          gap: 16px;
+        }
+
+        .helper-text {
+          font-size: 13px;
+          color: #999;
+          margin-top: 4px;
+        }
+
+        .file-input {
+          padding: 8px !important;
+          font-size: 14px !important;
+        }
+
+        .photo-preview {
+          margin-top: 16px;
+          position: relative;
+          border-radius: 8px;
+          overflow: hidden;
+          border: 2px solid #e8e6e1;
+        }
+
+        .photo-preview img {
+          width: 100%;
+          height: 240px;
+          object-fit: cover;
+          display: block;
+        }
+
+        .remove-photo {
+          position: absolute;
+          top: 12px;
+          right: 12px;
+          background: rgba(0,0,0,0.7);
+          color: white;
+          border: none;
+          padding: 8px 12px;
+          border-radius: 6px;
+          font-size: 13px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          transition: background 0.2s;
+        }
+
+        .remove-photo:hover {
+          background: rgba(0,0,0,0.9);
+        }
+
+        .form-actions {
+          display: flex;
+          gap: 12px;
+          padding: 24px 32px;
+          border-top: 1px solid #e8e6e1;
+          position: sticky;
+          bottom: 0;
+          background: white;
+        }
+
+        .form-actions button {
+          flex: 1;
+          padding: 14px;
+          border: none;
+          border-radius: 6px;
+          font-family: 'Karla', sans-serif;
+          font-size: 15px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .btn-primary {
+          background: #8b3a3a;
+          color: white;
+        }
+
+        .btn-primary:hover {
+          background: #6f2e2e;
+        }
+
+        .btn-secondary {
+          background: #f4f2ed;
+          color: #666;
+        }
+
+        .btn-secondary:hover {
+          background: #e8e6e1;
+        }
+
+        .btn-ai-review {
+          flex: 1;
+          padding: 14px;
+          border: 2px solid #8b3a3a;
+          background: white;
+          color: #8b3a3a;
+          border-radius: 6px;
+          font-family: 'Karla', sans-serif;
+          font-size: 15px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .btn-ai-review:hover:not(:disabled) {
+          background: #8b3a3a;
+          color: white;
+        }
+
+        .btn-ai-review:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .helper-text-hint {
+          font-size: 13px;
+          color: #666;
+          margin-top: 8px;
+          padding: 8px 12px;
+          background: #f8f5f0;
+          border-radius: 4px;
+          border-left: 3px solid #8b3a3a;
+          line-height: 1.5;
+        }
+
+        .empty-state {
+          text-align: center;
+          padding: 80px 24px;
+        }
+
+        .empty-state h3 {
+          font-family: 'Crimson Pro', serif;
+          font-size: 28px;
+          color: #1a1a1a;
+          margin-bottom: 12px;
+        }
+
+        .empty-state p {
+          color: #666;
+          margin-bottom: 24px;
+        }
+
+        .success-message {
+          position: fixed;
+          top: 100px;
+          left: 50%;
+          transform: translateX(-50%);
+          background: #2d5016;
+          color: white;
+          padding: 16px 24px;
+          border-radius: 8px;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+          z-index: 300;
+          animation: slideDown 0.3s ease;
+        }
+
+        @keyframes slideDown {
+          from {
+            opacity: 0;
+            transform: translateX(-50%) translateY(-20px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+          }
+        }
+
+        .success-message h3 {
+          font-family: 'Crimson Pro', serif;
+          font-size: 18px;
+          margin-bottom: 4px;
+        }
+
+        .success-message p {
+          font-size: 14px;
+          opacity: 0.9;
+        }
+
+        .admin-panel {
+          max-width: 1200px;
+          margin: 0 auto;
+          padding: 60px 24px;
+        }
+
+        .admin-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 40px;
+        }
+
+        .admin-header h2 {
+          font-family: 'Crimson Pro', serif;
+          font-size: 36px;
+          font-weight: 600;
+        }
+
+        .stats-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+          gap: 24px;
+          margin-bottom: 40px;
+        }
+
+        .stat-card {
+          background: white;
+          border: 1px solid #e8e6e1;
+          border-radius: 8px;
+          padding: 24px;
+        }
+
+        .stat-card h4 {
+          font-size: 14px;
+          color: #666;
+          margin-bottom: 8px;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+
+        .stat-card .stat-value {
+          font-family: 'Crimson Pro', serif;
+          font-size: 36px;
+          font-weight: 600;
+          color: #1a1a1a;
+        }
+
+        .pending-list {
+          display: flex;
+          flex-direction: column;
+          gap: 24px;
+        }
+
+        .pending-recipe {
+          background: white;
+          border: 2px solid #f4f2ed;
+          border-radius: 8px;
+          padding: 24px;
+          display: grid;
+          grid-template-columns: 120px 1fr auto;
+          gap: 24px;
+          align-items: start;
+        }
+
+        .pending-recipe img {
+          width: 120px;
+          height: 120px;
+          object-fit: cover;
+          border-radius: 6px;
+        }
+
+        .pending-recipe-content h3 {
+          font-family: 'Crimson Pro', serif;
+          font-size: 24px;
+          margin-bottom: 8px;
+        }
+
+        .pending-recipe-meta {
+          font-size: 14px;
+          color: #666;
+          margin-bottom: 12px;
+        }
+
+        .pending-recipe-actions {
+          display: flex;
+          gap: 12px;
+        }
+
+        .btn-approve {
+          background: #2d5016;
+          color: white;
+          border: none;
+          padding: 10px 20px;
+          border-radius: 6px;
+          font-family: 'Karla', sans-serif;
+          font-weight: 500;
+          cursor: pointer;
+          transition: background 0.2s;
+        }
+
+        .btn-approve:hover {
+          background: #1f3610;
+        }
+
+        .btn-reject {
+          background: #f4f2ed;
+          color: #666;
+          border: none;
+          padding: 10px 20px;
+          border-radius: 6px;
+          font-family: 'Karla', sans-serif;
+          font-weight: 500;
+          cursor: pointer;
+          transition: background 0.2s;
+        }
+
+        .btn-reject:hover {
+          background: #e8e6e1;
+        }
+
+        .admin-toggle {
+          position: fixed;
+          bottom: 24px;
+          right: 24px;
+          background: #8b3a3a;
+          color: white;
+          border: none;
+          width: 56px;
+          height: 56px;
+          border-radius: 50%;
+          font-size: 20px;
+          cursor: pointer;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+          transition: all 0.2s;
+          z-index: 100;
+        }
+
+        .admin-toggle:hover {
+          transform: scale(1.1);
+          box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+        }
+
+        .password-prompt {
+          background: white;
+          border-radius: 12px;
+          max-width: 400px;
+          width: 100%;
+        }
+
+        .ai-review-modal {
+          background: white;
+          border-radius: 12px;
+          max-width: 700px;
+          width: 100%;
+          max-height: 90vh;
+          overflow-y: auto;
+        }
+
+        .ai-review-content {
+          padding: 0;
+        }
+
+        .ai-score-section {
+          padding: 40px 32px;
+          text-align: center;
+          background: linear-gradient(135deg, #f8f5f0 0%, #ffffff 100%);
+          border-bottom: 1px solid #e8e6e1;
+        }
+
+        .ai-score-circle {
+          width: 140px;
+          height: 140px;
+          border-radius: 50%;
+          margin: 0 auto 20px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          position: relative;
+        }
+
+        .ai-score-inner {
+          width: 110px;
+          height: 110px;
+          background: white;
+          border-radius: 50%;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .ai-score-number {
+          font-family: 'Crimson Pro', serif;
+          font-size: 48px;
+          font-weight: 600;
+          color: #8b3a3a;
+          line-height: 1;
+        }
+
+        .ai-score-label {
+          font-size: 13px;
+          color: #666;
+          text-transform: uppercase;
+          letter-spacing: 1px;
+          margin-top: 4px;
+        }
+
+        .ai-overall-feedback {
+          font-size: 16px;
+          color: #333;
+          max-width: 500px;
+          margin: 0 auto;
+          line-height: 1.6;
+        }
+
+        .ai-section {
+          padding: 32px;
+          border-bottom: 1px solid #e8e6e1;
+        }
+
+        .ai-section h3 {
+          font-family: 'Crimson Pro', serif;
+          font-size: 22px;
+          font-weight: 600;
+          color: #1a1a1a;
+          margin-bottom: 16px;
+        }
+
+        .ai-list {
+          list-style: none;
+          padding: 0;
+        }
+
+        .ai-list li {
+          padding: 12px 16px;
+          margin-bottom: 8px;
+          background: #f8f5f0;
+          border-radius: 6px;
+          line-height: 1.6;
+          border-left: 3px solid #8b3a3a;
+        }
+
+        .ai-improvements {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+
+        .ai-improvement-item {
+          background: #f8f5f0;
+          padding: 16px;
+          border-radius: 8px;
+          border-left: 4px solid #8b3a3a;
+        }
+
+        .ai-improvement-field {
+          font-size: 12px;
+          text-transform: uppercase;
+          color: #8b3a3a;
+          font-weight: 600;
+          letter-spacing: 0.5px;
+          margin-bottom: 8px;
+        }
+
+        .ai-improvement-issue {
+          font-size: 15px;
+          color: #333;
+          margin-bottom: 8px;
+        }
+
+        .ai-improvement-suggestion {
+          font-size: 14px;
+          color: #666;
+          padding: 12px;
+          background: white;
+          border-radius: 4px;
+          line-height: 1.6;
+        }
+
+        .ai-improvement-suggestion strong {
+          color: #8b3a3a;
+        }
+
+        .ai-story-tips {
+          font-size: 15px;
+          line-height: 1.8;
+          color: #333;
+          padding: 16px;
+          background: #f8f5f0;
+          border-radius: 6px;
+        }
+
+        /* Stock Photos Styles */
+        .photo-options {
+          display: flex;
+          align-items: center;
+          margin-bottom: 20px;
+          flex-wrap: wrap;
+          gap: 12px;
+        }
+
+        .btn-stock-photos,
+        .btn-upload-photo {
+          padding: 12px 20px;
+          border: 2px solid #8b3a3a;
+          background: white;
+          color: #8b3a3a;
+          border-radius: 6px;
+          font-family: 'Karla', sans-serif;
+          font-size: 14px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .btn-stock-photos:hover,
+        .btn-upload-photo:hover {
+          background: #8b3a3a;
+          color: white;
+        }
+
+        .btn-upload-photo {
+          display: inline-block;
+        }
+
+        .suggested-photos-section {
+          margin: 24px 0;
+          padding: 20px;
+          background: #f8f5f0;
+          border-radius: 8px;
+        }
+
+        .suggested-photos-title {
+          font-family: 'Crimson Pro', serif;
+          font-size: 18px;
+          font-weight: 600;
+          color: #1a1a1a;
+          margin-bottom: 16px;
+        }
+
+        .suggested-photos-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 12px;
+          margin-bottom: 16px;
+        }
+
+        .suggested-photo-item {
+          position: relative;
+          aspect-ratio: 4/3;
+          border-radius: 6px;
+          overflow: hidden;
+          cursor: pointer;
+          transition: transform 0.2s;
+        }
+
+        .suggested-photo-item:hover {
+          transform: scale(1.05);
+        }
+
+        .suggested-photo-item img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+        }
+
+        .photo-overlay {
+          position: absolute;
+          inset: 0;
+          background: rgba(139, 58, 58, 0.9);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          opacity: 0;
+          transition: opacity 0.2s;
+          color: white;
+          font-weight: 500;
+        }
+
+        .suggested-photo-item:hover .photo-overlay {
+          opacity: 1;
+        }
+
+        .btn-show-more-photos {
+          width: 100%;
+          padding: 10px;
+          background: white;
+          border: 2px solid #8b3a3a;
+          color: #8b3a3a;
+          border-radius: 6px;
+          font-size: 14px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .btn-show-more-photos:hover {
+          background: #8b3a3a;
+          color: white;
+        }
+
+        .photo-credit {
+          font-size: 12px;
+          color: #666;
+          margin-top: 8px;
+          font-style: italic;
+        }
+
+        /* Stock Photos Modal */
+        .stock-photos-modal {
+          background: white;
+          border-radius: 12px;
+          max-width: 900px;
+          width: 100%;
+          max-height: 90vh;
+          overflow-y: auto;
+        }
+
+        .stock-photos-content {
+          padding: 0;
+        }
+
+        .stock-photos-search {
+          padding: 24px;
+          border-bottom: 1px solid #e8e6e1;
+          display: flex;
+          gap: 12px;
+        }
+
+        .stock-photos-search input {
+          flex: 1;
+          padding: 12px;
+          border: 2px solid #e8e6e1;
+          border-radius: 6px;
+          font-family: 'Karla', sans-serif;
+          font-size: 15px;
+        }
+
+        .stock-photos-search input:focus {
+          outline: none;
+          border-color: #8b3a3a;
+        }
+
+        .stock-photos-search button {
+          padding: 12px 24px;
+          background: #8b3a3a;
+          color: white;
+          border: none;
+          border-radius: 6px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: background 0.2s;
+        }
+
+        .stock-photos-search button:hover:not(:disabled) {
+          background: #6f2e2e;
+        }
+
+        .stock-photos-search button:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+
+        .loading-photos,
+        .no-photos {
+          padding: 60px 24px;
+          text-align: center;
+          color: #666;
+        }
+
+        .stock-photos-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 16px;
+          padding: 24px;
+        }
+
+        .stock-photo-item {
+          position: relative;
+          aspect-ratio: 4/3;
+          border-radius: 8px;
+          overflow: hidden;
+          cursor: pointer;
+          transition: transform 0.2s;
+        }
+
+        .stock-photo-item:hover {
+          transform: translateY(-4px);
+          box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+        }
+
+        .stock-photo-item img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+        }
+
+        .stock-photo-overlay {
+          position: absolute;
+          inset: 0;
+          background: linear-gradient(to top, rgba(0,0,0,0.8) 0%, transparent 50%);
+          display: flex;
+          flex-direction: column;
+          justify-content: flex-end;
+          padding: 16px;
+          opacity: 0;
+          transition: opacity 0.2s;
+        }
+
+        .stock-photo-item:hover .stock-photo-overlay {
+          opacity: 1;
+        }
+
+        .photo-info {
+          margin-bottom: 8px;
+        }
+
+        .photo-photographer {
+          color: white;
+          font-size: 12px;
+        }
+
+        .btn-select-photo {
+          background: white;
+          color: #8b3a3a;
+          border: none;
+          padding: 8px 16px;
+          border-radius: 4px;
+          font-weight: 500;
+          font-size: 13px;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .btn-select-photo:hover {
+          background: #8b3a3a;
+          color: white;
+        }
+
+        .stock-photos-footer {
+          padding: 16px 24px;
+          border-top: 1px solid #e8e6e1;
+          background: #f8f5f0;
+        }
+
+        @media (max-width: 768px) {
+          .hero h1 {
+            font-size: 40px;
+          }
+          
+          .recipes-grid {
+            grid-template-columns: 1fr;
+          }
+          
+          .form-row {
+            grid-template-columns: 1fr;
+          }
+
+          .suggested-photos-grid,
+          .stock-photos-grid {
+            grid-template-columns: repeat(2, 1fr);
+          }
+
+          .photo-options {
+            flex-direction: column;
+            align-items: stretch;
+          }
+
+          .photo-options span {
+            display: none;
+          }
+
+          .pending-recipe {
+            grid-template-columns: 1fr;
+          }
+
+          .pending-recipe img {
+            width: 100%;
+            height: 200px;
+          }
+        }
+      `}</style>
+
+      {/* Header */}
+      <header className="header">
+        <div className="header-content">
+          <div className="logo" onClick={() => setView('home')}>
+            BoilBakeFry
+          </div>
+          <nav className="nav">
+            <button 
+              className={view === 'home' ? 'active' : ''}
+              onClick={() => setView('home')}
+            >
+              Home
+            </button>
+            <button 
+              className={view === 'browse' ? 'active' : ''}
+              onClick={() => setView('browse')}
+            >
+              Browse Recipes
+            </button>
+            <button className="submit-btn" onClick={() => setShowSubmitForm(true)}>
+              <Plus size={18} />
+              Submit Recipe
+            </button>
+          </nav>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      {view === 'home' && (
+        <>
+          <section className="hero">
+            <h1>Cook. Share. Savor.</h1>
+            <p>A community of home cooks sharing recipes with soul, story, and substance.</p>
+            <div className="search-bar">
+              <input
+                type="text"
+                placeholder="Search recipes, ingredients, or tags..."
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  if (e.target.value) setView('browse');
+                }}
+              />
+              <Search className="search-icon" size={20} />
+            </div>
+          </section>
+
+          <div className="recipes-container">
+            <div className="recipes-header">
+              <h2>Featured Recipes</h2>
+              <p className="recipes-count">{recipes.length} recipes and counting</p>
+            </div>
+            {recipes.length === 0 ? (
+              <div className="empty-state">
+                <ChefHat size={64} color="#8b3a3a" style={{margin: '0 auto 24px'}} />
+                <h3>No recipes yet</h3>
+                <p>Be the first to share a recipe with the community!</p>
+                <button className="submit-btn" onClick={() => setShowSubmitForm(true)}>
+                  <Plus size={18} />
+                  Submit Your First Recipe
+                </button>
+              </div>
+            ) : (
+              <div className="recipes-grid">
+                {recipes.slice(0, 6).map(recipe => (
+                  <RecipeCard key={recipe.id} recipe={recipe} />
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {view === 'browse' && (
+        <div className="recipes-container">
+          <div className="recipes-header">
+            <h2>{searchQuery ? `Results for "${searchQuery}"` : 'All Recipes'}</h2>
+            <p className="recipes-count">
+              {filteredRecipes.length} {filteredRecipes.length === 1 ? 'recipe' : 'recipes'}
+            </p>
+          </div>
+          {filteredRecipes.length === 0 ? (
+            <div className="empty-state">
+              <h3>No recipes found</h3>
+              <p>Try adjusting your search or browse all recipes.</p>
+            </div>
+          ) : (
+            <div className="recipes-grid">
+              {filteredRecipes.map(recipe => (
+                <RecipeCard key={recipe.id} recipe={recipe} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {view === 'detail' && selectedRecipe && (
+        <div className="recipe-detail">
+          <button className="back-btn" onClick={() => setView('browse')}>
+            ← Back to recipes
+          </button>
+          {selectedRecipe.photo && (
+            <div className="recipe-detail-image">
+              <img src={selectedRecipe.photo} alt={selectedRecipe.title} />
+            </div>
+          )}
+          <h1>{selectedRecipe.title}</h1>
+          <p className="author">By {selectedRecipe.author}</p>
+          
+          <div className="story">{selectedRecipe.story}</div>
+
+          <div className="recipe-info">
+            <div className="info-item">
+              <Clock size={18} />
+              <span>Prep: {selectedRecipe.prepTime} min</span>
+            </div>
+            <div className="info-item">
+              <Clock size={18} />
+              <span>Cook: {selectedRecipe.cookTime} min</span>
+            </div>
+            <div className="info-item">
+              <Users size={18} />
+              <span>Serves {selectedRecipe.servings}</span>
+            </div>
+          </div>
+
+          <div className="recipe-section">
+            <h2>Ingredients</h2>
+            <ul>
+              {selectedRecipe.ingredients.map((ingredient, i) => (
+                <li key={i}>{ingredient}</li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="recipe-section">
+            <h2>Instructions</h2>
+            <ol>
+              {selectedRecipe.instructions.map((step, i) => (
+                <li key={i}>{step}</li>
+              ))}
+            </ol>
+          </div>
+
+          {selectedRecipe.tags.length > 0 && (
+            <div className="tags">
+              {selectedRecipe.tags.map((tag, i) => (
+                <span key={i} className="tag">{tag}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Submit Form Modal */}
+      {showSubmitForm && (
+        <div className="form-overlay" onClick={(e) => {
+          if (e.target.className === 'form-overlay') setShowSubmitForm(false);
+        }}>
+          <div className="form-container">
+            <div className="form-header">
+              <h2>Submit Your Recipe</h2>
+              <button className="close-btn" onClick={() => setShowSubmitForm(false)}>
+                <X size={24} />
+              </button>
+            </div>
+            
+            <form onSubmit={handleSubmit}>
+              <div className="form-content">
+                <div className="guidelines">
+                  <h3>Guidelines for a Great Recipe</h3>
+                  <ul>
+                    <li><strong>Tell a story:</strong> Share the origin, memories, or inspiration behind the dish</li>
+                    <li><strong>Be specific:</strong> Include measurements, temperatures, and timing details</li>
+                    <li><strong>Write clearly:</strong> Use active voice and step-by-step instructions</li>
+                    <li><strong>Add context:</strong> Explain techniques and offer substitutions where helpful</li>
+                    <li><strong>Moderation:</strong> Your recipe will be reviewed and typically published within 24 hours</li>
+                  </ul>
+                </div>
+
+                <div className="form-group">
+                  <label>Recipe Title *</label>
+                  <input
+                    type="text"
+                    required
+                    value={formData.title}
+                    onChange={(e) => setFormData({...formData, title: e.target.value})}
+                    placeholder="e.g., Grandma's Sunday Pot Roast"
+                  />
+                  <p className="helper-text-hint">💡 {getFieldHint('title')}</p>
+                </div>
+
+                <div className="form-group">
+                  <label>Your Name *</label>
+                  <input
+                    type="text"
+                    required
+                    value={formData.author}
+                    onChange={(e) => setFormData({...formData, author: e.target.value})}
+                    placeholder="How should we credit you?"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Your Email *</label>
+                  <input
+                    type="email"
+                    required
+                    value={formData.email}
+                    onChange={(e) => setFormData({...formData, email: e.target.value})}
+                    placeholder="your.email@example.com"
+                  />
+                  <p className="helper-text">We'll only use this to notify you when your recipe is approved. Not displayed publicly.</p>
+                </div>
+
+                <div className="form-group">
+                  <label>Recipe Photo</label>
+                  
+                  <div className="photo-options">
+                    <button 
+                      type="button"
+                      className="btn-stock-photos"
+                      onClick={() => {
+                        setShowStockPhotos(true);
+                        if (suggestedPhotos.length === 0 && formData.title) {
+                          fetchStockPhotos(formData.title, true);
+                        }
+                      }}
+                    >
+                      🖼️ Browse Stock Photos
+                    </button>
+                    <span style={{margin: '0 12px', color: '#999'}}>or</span>
+                    <label className="btn-upload-photo">
+                      📤 Upload Your Own
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handlePhotoUpload}
+                        style={{display: 'none'}}
+                      />
+                    </label>
+                  </div>
+
+                  {/* Auto-suggested photos */}
+                  {suggestedPhotos.length > 0 && !formData.photo && (
+                    <div className="suggested-photos-section">
+                      <h4 className="suggested-photos-title">
+                        💡 Suggested for "{formData.title}"
+                      </h4>
+                      <div className="suggested-photos-grid">
+                        {suggestedPhotos.slice(0, 6).map((photo) => (
+                          <div 
+                            key={photo.id}
+                            className="suggested-photo-item"
+                            onClick={() => selectStockPhoto(photo)}
+                          >
+                            <img src={photo.urls.small} alt={photo.alt_description || 'Food photo'} />
+                            <div className="photo-overlay">
+                              <span>Select</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      {suggestedPhotos.length > 6 && (
+                        <button 
+                          type="button"
+                          className="btn-show-more-photos"
+                          onClick={() => setShowStockPhotos(true)}
+                        >
+                          Show All {suggestedPhotos.length} Suggestions
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {formData.photo && (
+                    <div className="photo-preview">
+                      <img src={formData.photo} alt="Recipe preview" />
+                      {formData.photoCredit && (
+                        <p className="photo-credit">{formData.photoCredit}</p>
+                      )}
+                      <button 
+                        type="button"
+                        className="remove-photo"
+                        onClick={() => setFormData({...formData, photo: null, photoCredit: null, photoUrl: null})}
+                      >
+                        <X size={16} /> Remove
+                      </button>
+                    </div>
+                  )}
+                  <p className="helper-text">
+                    {isLoadingPhotos ? '🔄 Finding great photos for you...' : 'We\'ll suggest professional photos based on your recipe'}
+                  </p>
+                </div>
+
+                <div className="form-group">
+                  <label>Recipe Story *</label>
+                  <textarea
+                    required
+                    value={formData.story}
+                    onChange={(e) => setFormData({...formData, story: e.target.value})}
+                    placeholder="Tell us about this recipe. Where does it come from? What makes it special? What memories does it evoke?"
+                    rows="5"
+                  />
+                  <p className="helper-text-hint">💡 {getFieldHint('story')}</p>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Prep Time (min) *</label>
+                    <input
+                      type="number"
+                      required
+                      value={formData.prepTime}
+                      onChange={(e) => setFormData({...formData, prepTime: e.target.value})}
+                      placeholder="20"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Cook Time (min) *</label>
+                    <input
+                      type="number"
+                      required
+                      value={formData.cookTime}
+                      onChange={(e) => setFormData({...formData, cookTime: e.target.value})}
+                      placeholder="45"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Servings *</label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.servings}
+                      onChange={(e) => setFormData({...formData, servings: e.target.value})}
+                      placeholder="4-6"
+                    />
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label>Ingredients *</label>
+                  <textarea
+                    required
+                    value={formData.ingredients}
+                    onChange={(e) => setFormData({...formData, ingredients: e.target.value})}
+                    placeholder="2 cups all-purpose flour&#10;1 teaspoon salt&#10;3 large eggs, room temperature&#10;..."
+                    rows="8"
+                  />
+                  <p className="helper-text-hint">💡 {getFieldHint('ingredients')}</p>
+                </div>
+
+                <div className="form-group">
+                  <label>Instructions *</label>
+                  <textarea
+                    required
+                    value={formData.instructions}
+                    onChange={(e) => setFormData({...formData, instructions: e.target.value})}
+                    placeholder="Preheat oven to 350°F and grease a 9x13 baking dish.&#10;In a large bowl, whisk together flour and salt.&#10;..."
+                    rows="10"
+                  />
+                  <p className="helper-text-hint">💡 {getFieldHint('instructions')}</p>
+                </div>
+
+                <div className="form-group">
+                  <label>Tags</label>
+                  <input
+                    type="text"
+                    value={formData.tags}
+                    onChange={(e) => setFormData({...formData, tags: e.target.value})}
+                    placeholder="comfort food, italian, weeknight dinner"
+                  />
+                  <p className="helper-text-hint">💡 {getFieldHint('tags')}</p>
+                </div>
+              </div>
+
+              <div className="form-actions">
+                <button type="button" className="btn-secondary" onClick={() => setShowSubmitForm(false)}>
+                  Cancel
+                </button>
+                <button 
+                  type="button" 
+                  className="btn-ai-review" 
+                  onClick={reviewRecipeWithAI}
+                  disabled={isReviewingRecipe || !formData.title || !formData.story}
+                >
+                  {isReviewingRecipe ? '🤖 Reviewing...' : '🤖 Get AI Feedback'}
+                </button>
+                <button type="submit" className="btn-primary">
+                  Publish Recipe
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Success Message */}
+      {showSuccessMessage && (
+        <div className="success-message">
+          <h3>✓ Recipe Submitted!</h3>
+          <p>Thank you! Your recipe will be reviewed and published within 24 hours.</p>
+        </div>
+      )}
+
+      {/* Admin Panel */}
+      {showAdminPanel && isAdmin && (
+        <div className="admin-panel">
+          <div className="admin-header">
+            <div>
+              <h2>Admin Dashboard</h2>
+              <p style={{fontSize: '14px', color: '#666', marginTop: '4px'}}>
+                Logged in as {user?.email}
+              </p>
+            </div>
+            <div style={{display: 'flex', gap: '12px'}}>
+              <button className="btn-secondary" onClick={handleLogout}>
+                <LogOut size={16} style={{marginRight: '6px'}} />
+                Logout
+              </button>
+              <button className="btn-secondary" onClick={() => setShowAdminPanel(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+
+          <AnalyticsDashboard recipes={recipes} pendingRecipes={pendingRecipes} />
+
+          <h3 style={{fontFamily: 'Crimson Pro, serif', fontSize: '28px', marginBottom: '24px'}}>
+            Pending Recipes ({pendingRecipes.length})
+          </h3>
+
+          {pendingRecipes.length === 0 ? (
+            <div className="empty-state">
+              <p>No pending recipes to review</p>
+            </div>
+          ) : (
+            <div className="pending-list">
+              {pendingRecipes.map(recipe => (
+                <div key={recipe.id} className="pending-recipe">
+                  {recipe.photo ? (
+                    <img src={recipe.photo} alt={recipe.title} />
+                  ) : (
+                    <div style={{width: '120px', height: '120px', background: '#f4f2ed', borderRadius: '6px'}} />
+                  )}
+                  <div className="pending-recipe-content">
+                    <h3>{recipe.title}</h3>
+                    <div className="pending-recipe-meta">
+                      By {recipe.author} • {recipe.email} • Submitted {new Date(recipe.createdAt).toLocaleDateString()}
+                    </div>
+                    <p style={{marginBottom: '12px', lineHeight: '1.6'}}>{recipe.story.substring(0, 200)}...</p>
+                    <div style={{fontSize: '14px', color: '#666'}}>
+                      <div>Time: {recipe.prepTime}min prep + {recipe.cookTime}min cook • Serves {recipe.servings}</div>
+                      <div>Tags: {recipe.tags.join(', ') || 'None'}</div>
+                    </div>
+                  </div>
+                  <div className="pending-recipe-actions">
+                    <button className="btn-approve" onClick={() => approveRecipe(recipe)}>
+                      Approve
+                    </button>
+                    <button className="btn-reject" onClick={() => rejectRecipe(recipe.id)}>
+                      Reject
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Admin Toggle Button */}
+      <button 
+        className="admin-toggle" 
+        onClick={handleAdminToggle}
+        title={isAdmin ? "Admin Panel" : "Admin Login"}
+      >
+        ⚙️
+      </button>
+
+      {/* Login Form Modal */}
+      {showLoginForm && (
+        <div className="form-overlay" onClick={(e) => {
+          if (e.target.className === 'form-overlay') {
+            setShowLoginForm(false);
+            setLoginEmail('');
+            setLoginPassword('');
+            setLoginError('');
+          }
+        }}>
+          <div className="password-prompt">
+            <div className="form-header">
+              <h2>Admin Login</h2>
+              <button className="close-btn" onClick={() => {
+                setShowLoginForm(false);
+                setLoginEmail('');
+                setLoginPassword('');
+                setLoginError('');
+              }}>
+                <X size={24} />
+              </button>
+            </div>
+            <form onSubmit={handleLogin} style={{padding: '32px'}}>
+              <div className="form-group">
+                <label>Email Address</label>
+                <input
+                  type="email"
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  placeholder="admin@boilbakefry.com"
+                  required
+                  autoFocus
+                />
+              </div>
+              <div className="form-group">
+                <label>Password</label>
+                <input
+                  type="password"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder="Enter your password"
+                  required
+                  style={{borderColor: loginError ? '#d45d3e' : '#e8e6e1'}}
+                />
+                {loginError && (
+                  <p style={{color: '#d45d3e', fontSize: '14px', marginTop: '8px'}}>
+                    {loginError}
+                  </p>
+                )}
+              </div>
+              <button 
+                type="submit" 
+                className="btn-primary" 
+                style={{width: '100%'}}
+                disabled={isLoading}
+              >
+                {isLoading ? 'Logging in...' : 'Login'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* AI Review Results Modal */}
+      {showAIReview && aiReviewResults && (
+        <div className="form-overlay" onClick={(e) => {
+          if (e.target.className === 'form-overlay') {
+            setShowAIReview(false);
+          }
+        }}>
+          <div className="ai-review-modal">
+            <div className="form-header">
+              <h2>🤖 AI Recipe Review</h2>
+              <button className="close-btn" onClick={() => setShowAIReview(false)}>
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="ai-review-content">
+              {/* Score */}
+              <div className="ai-score-section">
+                <div className="ai-score-circle" style={{
+                  background: `conic-gradient(#8b3a3a ${aiReviewResults.score}%, #f4f2ed ${aiReviewResults.score}%)`
+                }}>
+                  <div className="ai-score-inner">
+                    <div className="ai-score-number">{aiReviewResults.score}</div>
+                    <div className="ai-score-label">Score</div>
+                  </div>
+                </div>
+                <p className="ai-overall-feedback">{aiReviewResults.overallFeedback}</p>
+              </div>
+
+              {/* Strengths */}
+              {aiReviewResults.strengths && aiReviewResults.strengths.length > 0 && (
+                <div className="ai-section">
+                  <h3>✅ Strengths</h3>
+                  <ul className="ai-list strengths-list">
+                    {aiReviewResults.strengths.map((strength, i) => (
+                      <li key={i}>{strength}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Improvements */}
+              {aiReviewResults.improvements && aiReviewResults.improvements.length > 0 && (
+                <div className="ai-section">
+                  <h3>💡 Suggested Improvements</h3>
+                  <div className="ai-improvements">
+                    {aiReviewResults.improvements.map((improvement, i) => (
+                      <div key={i} className="ai-improvement-item">
+                        <div className="ai-improvement-field">{improvement.field}</div>
+                        <div className="ai-improvement-issue">{improvement.issue}</div>
+                        <div className="ai-improvement-suggestion">
+                          <strong>Try:</strong> {improvement.suggestion}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Story Tips */}
+              {aiReviewResults.storyTips && (
+                <div className="ai-section">
+                  <h3>📖 Story Enhancement Tips</h3>
+                  <p className="ai-story-tips">{aiReviewResults.storyTips}</p>
+                </div>
+              )}
+
+              <div style={{padding: '24px', borderTop: '1px solid #e8e6e1', background: '#f8f5f0'}}>
+                <p style={{fontSize: '14px', color: '#666', marginBottom: '16px'}}>
+                  Ready to submit? Make improvements and submit, or submit as-is!
+                </p>
+                <button 
+                  className="btn-primary" 
+                  style={{width: '100%'}}
+                  onClick={() => setShowAIReview(false)}
+                >
+                  Continue Editing
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Stock Photos Browser Modal */}
+      {showStockPhotos && (
+        <div className="form-overlay" onClick={(e) => {
+          if (e.target.className === 'form-overlay') {
+            setShowStockPhotos(false);
+          }
+        }}>
+          <div className="stock-photos-modal">
+            <div className="form-header">
+              <h2>🖼️ Browse Stock Photos</h2>
+              <button className="close-btn" onClick={() => setShowStockPhotos(false)}>
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="stock-photos-content">
+              <div className="stock-photos-search">
+                <input
+                  type="text"
+                  placeholder="Search for food photos..."
+                  value={manualSearchQuery}
+                  onChange={(e) => setManualSearchQuery(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && handleManualPhotoSearch()}
+                />
+                <button onClick={handleManualPhotoSearch} disabled={isLoadingPhotos}>
+                  {isLoadingPhotos ? '🔄' : '🔍'} Search
+                </button>
+              </div>
+
+              {isLoadingPhotos ? (
+                <div className="loading-photos">
+                  <p>🔄 Finding perfect photos...</p>
+                </div>
+              ) : suggestedPhotos.length === 0 ? (
+                <div className="no-photos">
+                  <p>No photos found. Try a different search term!</p>
+                </div>
+              ) : (
+                <div className="stock-photos-grid">
+                  {suggestedPhotos.map((photo) => (
+                    <div 
+                      key={photo.id}
+                      className="stock-photo-item"
+                      onClick={() => selectStockPhoto(photo)}
+                    >
+                      <img src={photo.urls.small} alt={photo.alt_description || 'Food photo'} />
+                      <div className="stock-photo-overlay">
+                        <div className="photo-info">
+                          <span className="photo-photographer">📷 {photo.user.name}</span>
+                        </div>
+                        <button className="btn-select-photo">Select Photo</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="stock-photos-footer">
+                <p style={{fontSize: '13px', color: '#666', textAlign: 'center'}}>
+                  Photos provided by <a href="https://unsplash.com" target="_blank" rel="noopener noreferrer" style={{color: '#8b3a3a'}}>Unsplash</a>
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AnalyticsDashboard = ({ recipes, pendingRecipes }) => {
+  const [analytics, setAnalytics] = React.useState([]);
+
+  React.useEffect(() => {
+    const loadAnalytics = async () => {
+      try {
+        const result = await window.storage.get('analytics-events');
+        if (result && result.value) {
+          setAnalytics(JSON.parse(result.value));
+        }
+      } catch (error) {
+        console.log('No analytics data');
+      }
+    };
+    loadAnalytics();
+  }, []);
+
+  const totalViews = analytics.filter(e => e.type === 'recipe_viewed').length;
+  const totalSubmissions = analytics.filter(e => e.type === 'recipe_submitted').length;
+  const totalApprovals = analytics.filter(e => e.type === 'recipe_approved').length;
+  
+  const last7Days = analytics.filter(e => {
+    const eventDate = new Date(e.timestamp);
+    const weekAgo = new Date();
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    return eventDate >= weekAgo;
+  });
+
+  const viewsLast7Days = last7Days.filter(e => e.type === 'recipe_viewed').length;
+
+  return (
+    <div className="stats-grid">
+      <div className="stat-card">
+        <h4>Total Recipes</h4>
+        <div className="stat-value">{recipes.length}</div>
+      </div>
+      <div className="stat-card">
+        <h4>Pending Review</h4>
+        <div className="stat-value">{pendingRecipes.length}</div>
+      </div>
+      <div className="stat-card">
+        <h4>Total Views</h4>
+        <div className="stat-value">{totalViews}</div>
+      </div>
+      <div className="stat-card">
+        <h4>Views (7 days)</h4>
+        <div className="stat-value">{viewsLast7Days}</div>
+      </div>
+      <div className="stat-card">
+        <h4>Total Submissions</h4>
+        <div className="stat-value">{totalSubmissions}</div>
+      </div>
+      <div className="stat-card">
+        <h4>Approval Rate</h4>
+        <div className="stat-value">
+          {totalSubmissions > 0 ? Math.round((totalApprovals / totalSubmissions) * 100) : 0}%
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default BoilBakeFry;
