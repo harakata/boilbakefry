@@ -412,7 +412,7 @@ Format your response as JSON:
         `https://api.unsplash.com/search/photos?query=${cleanQuery}+food&per_page=9&orientation=landscape`,
         {
           headers: {
-            'Authorization': 'Client-ID kKLbea3zC2lHWp0vN_2CsYEGDk5KXsH4r_rXYQ-Ig2k'
+            'Authorization': 'Client-ID MBAsgvyqzO1tNoEYRPi_tOYow5b2Ptai5A07RgDonbg'
           }
         }
       );
