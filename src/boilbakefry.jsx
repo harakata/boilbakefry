@@ -3,7 +3,7 @@ import { Search, Plus, ChefHat, Clock, Users, BookOpen, X, LogOut } from 'lucide
 
 // REPLACE THESE WITH YOUR SUPABASE KEYS
 const SUPABASE_URL = 'https://tkwpaqauxtpvflzpydfn.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_wqdL1DZi_PLDobVHgvKBlA_PFIitS4j';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRrd3BhcWF1eHRwdmZsenB5ZGZuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY1MDgzMTYsImV4cCI6MjA4MjA4NDMxNn0.NlZOcfmV1j3Vl-0P74LzSnogAvkblZndNnICPtOVALM';
 
 // Simple Supabase client (no npm package needed)
 class SupabaseClient {
