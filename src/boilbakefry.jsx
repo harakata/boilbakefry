@@ -13,6 +13,7 @@ class SupabaseClient {
     this.headers = {
       'apikey': key,
       'Content-Type': 'application/json',
+      'Prefer': 'return=representation'
     };
   }
 
@@ -57,7 +58,7 @@ class SupabaseClient {
 
   async isAdmin(email, accessToken) {
     const response = await fetch(
-      `${this.url}/rest/v1/admins?email=eq.${email}`,
+      `${this.url}/rest/v1/admins?email=eq.${encodeURIComponent(email)}`,
       {
         headers: {
           ...this.headers,
@@ -66,7 +67,98 @@ class SupabaseClient {
       }
     );
     const data = await response.json();
-    return data.length > 0;
+    return Array.isArray(data) && data.length > 0;
+  }
+
+  // Database operations
+  async getRecipes() {
+    const response = await fetch(
+      `${this.url}/rest/v1/recipes?order=created_at.desc`,
+      { headers: this.headers }
+    );
+    const data = await response.json();
+    return Array.isArray(data) ? data : [];
+  }
+
+  async getPendingRecipes() {
+    const response = await fetch(
+      `${this.url}/rest/v1/pending_recipes?order=created_at.desc`,
+      { headers: this.headers }
+    );
+    const data = await response.json();
+    return Array.isArray(data) ? data : [];
+  }
+
+  async submitRecipe(recipe) {
+    const response = await fetch(
+      `${this.url}/rest/v1/pending_recipes`,
+      {
+        method: 'POST',
+        headers: this.headers,
+        body: JSON.stringify(recipe)
+      }
+    );
+    return await response.json();
+  }
+
+  async approveRecipe(recipe, accessToken) {
+    // First, insert into recipes table
+    const approvedRecipe = {
+      title: recipe.title,
+      author: recipe.author,
+      story: recipe.story,
+      prep_time: recipe.prep_time,
+      cook_time: recipe.cook_time,
+      servings: recipe.servings,
+      ingredients: recipe.ingredients,
+      instructions: recipe.instructions,
+      tags: recipe.tags,
+      photo: recipe.photo,
+      photo_credit: recipe.photo_credit,
+      status: 'approved'
+    };
+
+    const insertResponse = await fetch(
+      `${this.url}/rest/v1/recipes`,
+      {
+        method: 'POST',
+        headers: {
+          ...this.headers,
+          'Authorization': `Bearer ${accessToken}`
+        },
+        body: JSON.stringify(approvedRecipe)
+      }
+    );
+
+    if (insertResponse.ok) {
+      // Then delete from pending
+      await fetch(
+        `${this.url}/rest/v1/pending_recipes?id=eq.${recipe.id}`,
+        {
+          method: 'DELETE',
+          headers: {
+            ...this.headers,
+            'Authorization': `Bearer ${accessToken}`
+          }
+        }
+      );
+    }
+
+    return insertResponse.ok;
+  }
+
+  async rejectRecipe(recipeId, accessToken) {
+    const response = await fetch(
+      `${this.url}/rest/v1/pending_recipes?id=eq.${recipeId}`,
+      {
+        method: 'DELETE',
+        headers: {
+          ...this.headers,
+          'Authorization': `Bearer ${accessToken}`
+        }
+      }
+    );
+    return response.ok;
   }
 }
 
@@ -90,12 +182,7 @@ const BoilBakeFry = () => {
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  
-  // AI Recipe Assistant State
-  const [showAIReview, setShowAIReview] = useState(false);
-  const [aiReviewResults, setAIReviewResults] = useState(null);
-  const [isReviewingRecipe, setIsReviewingRecipe] = useState(false);
-  const [aiHints, setAIHints] = useState({});
+  const [accessToken, setAccessToken] = useState(null);
   
   // Stock Photo State
   const [suggestedPhotos, setSuggestedPhotos] = useState([]);
@@ -114,28 +201,18 @@ const BoilBakeFry = () => {
     tags: '',
     author: '',
     photo: null,
+    photoCredit: '',
     email: ''
   });
 
-  // Load recipes from storage on mount
+  // Load recipes from Supabase on mount
   useEffect(() => {
     const loadRecipes = async () => {
       try {
-        const result = await window.storage.get('recipes-collection');
-        if (result && result.value) {
-          setRecipes(JSON.parse(result.value));
-        }
+        const recipesData = await supabase.getRecipes();
+        setRecipes(recipesData);
       } catch (error) {
-        console.log('No existing recipes found, starting fresh');
-      }
-
-      try {
-        const pendingResult = await window.storage.get('pending-recipes');
-        if (pendingResult && pendingResult.value) {
-          setPendingRecipes(JSON.parse(pendingResult.value));
-        }
-      } catch (error) {
-        console.log('No pending recipes');
+        console.log('Error loading recipes:', error);
       }
     };
     loadRecipes();
@@ -149,8 +226,13 @@ const BoilBakeFry = () => {
           const userData = await supabase.getUser(session.access_token);
           if (userData.email) {
             setUser(userData);
+            setAccessToken(session.access_token);
             const adminStatus = await supabase.isAdmin(userData.email, session.access_token);
             setIsAdmin(adminStatus);
+            if (adminStatus) {
+              const pendingData = await supabase.getPendingRecipes();
+              setPendingRecipes(pendingData);
+            }
           } else {
             localStorage.removeItem('supabase_session');
           }
@@ -168,54 +250,18 @@ const BoilBakeFry = () => {
     if (formData.title && formData.title.length > 3 && showSubmitForm) {
       const timer = setTimeout(() => {
         fetchStockPhotos(formData.title);
-      }, 2000); // Wait 2 seconds after user stops typing
+      }, 2000);
       
       return () => clearTimeout(timer);
     }
   }, [formData.title, showSubmitForm]);
-
-  // Save recipes to storage whenever they change
-  const saveRecipes = async (updatedRecipes) => {
-    try {
-      await window.storage.set('recipes-collection', JSON.stringify(updatedRecipes));
-      setRecipes(updatedRecipes);
-    } catch (error) {
-      console.error('Error saving recipes:', error);
-    }
-  };
-
-  const savePendingRecipes = async (updatedPending) => {
-    try {
-      await window.storage.set('pending-recipes', JSON.stringify(updatedPending));
-      setPendingRecipes(updatedPending);
-    } catch (error) {
-      console.error('Error saving pending recipes:', error);
-    }
-  };
-
-  const trackEvent = async (eventType, metadata = {}) => {
-    try {
-      const event = {
-        type: eventType,
-        timestamp: new Date().toISOString(),
-        ...metadata
-      };
-      
-      const analyticsResult = await window.storage.get('analytics-events');
-      const events = analyticsResult && analyticsResult.value ? JSON.parse(analyticsResult.value) : [];
-      events.push(event);
-      await window.storage.set('analytics-events', JSON.stringify(events));
-    } catch (error) {
-      console.error('Error tracking event:', error);
-    }
-  };
 
   const handlePhotoUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
       const reader = new FileReader();
       reader.onloadend = () => {
-        setFormData({...formData, photo: reader.result});
+        setFormData({...formData, photo: reader.result, photoCredit: ''});
       };
       reader.readAsDataURL(file);
     }
@@ -223,10 +269,8 @@ const BoilBakeFry = () => {
 
   const handleAdminToggle = () => {
     if (isAdmin) {
-      // Already logged in as admin, toggle panel
       setShowAdminPanel(!showAdminPanel);
     } else {
-      // Not admin, show login form
       setShowLoginForm(true);
     }
   };
@@ -246,14 +290,12 @@ const BoilBakeFry = () => {
       }
 
       if (response.access_token) {
-        // Save session
         localStorage.setItem('supabase_session', JSON.stringify(response));
+        setAccessToken(response.access_token);
         
-        // Get user data
         const userData = await supabase.getUser(response.access_token);
         setUser(userData);
 
-        // Check if user is admin
         const adminStatus = await supabase.isAdmin(userData.email, response.access_token);
         
         if (adminStatus) {
@@ -262,6 +304,10 @@ const BoilBakeFry = () => {
           setShowLoginForm(false);
           setLoginEmail('');
           setLoginPassword('');
+          
+          // Load pending recipes
+          const pendingData = await supabase.getPendingRecipes();
+          setPendingRecipes(pendingData);
         } else {
           setLoginError('You do not have admin privileges');
           localStorage.removeItem('supabase_session');
@@ -277,10 +323,8 @@ const BoilBakeFry = () => {
 
   const handleLogout = async () => {
     try {
-      const savedSession = localStorage.getItem('supabase_session');
-      if (savedSession) {
-        const session = JSON.parse(savedSession);
-        await supabase.signOut(session.access_token);
+      if (accessToken) {
+        await supabase.signOut(accessToken);
       }
     } catch (error) {
       console.error('Logout error:', error);
@@ -289,115 +333,77 @@ const BoilBakeFry = () => {
     localStorage.removeItem('supabase_session');
     setUser(null);
     setIsAdmin(false);
+    setAccessToken(null);
     setShowAdminPanel(false);
   };
 
-  // AI Recipe Assistant Functions
-  const reviewRecipeWithAI = async () => {
-    setIsReviewingRecipe(true);
-    setShowAIReview(true);
-
-    try {
-      const prompt = `You are a recipe writing coach for BoilBakeFry, a recipe sharing platform that values storytelling and detailed, precise instructions.
-
-Review this recipe submission and provide constructive feedback:
-
-**Title:** ${formData.title || '[Not provided]'}
-**Author:** ${formData.author || '[Not provided]'}
-**Story:** ${formData.story || '[Not provided]'}
-**Prep Time:** ${formData.prepTime || '[Not provided]'} minutes
-**Cook Time:** ${formData.cookTime || '[Not provided]'} minutes
-**Servings:** ${formData.servings || '[Not provided]'}
-**Ingredients:**
-${formData.ingredients || '[Not provided]'}
-
-**Instructions:**
-${formData.instructions || '[Not provided]'}
-
-**Tags:** ${formData.tags || '[Not provided]'}
-
-Analyze this recipe and provide:
-1. Overall score (0-100)
-2. Specific strengths (2-3 points)
-3. Specific improvements needed (2-4 points with examples)
-4. Story enhancement suggestions (if story is weak)
-5. Instruction clarity issues (be specific about which steps need detail)
-
-Format your response as JSON:
-{
-  "score": number,
-  "strengths": ["strength 1", "strength 2"],
-  "improvements": [
-    {"field": "title/story/ingredients/instructions", "issue": "description", "suggestion": "specific improvement"},
-  ],
-  "storyTips": "suggestion for better storytelling",
-  "overallFeedback": "encouraging summary"
-}`;
-
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 2000,
-          messages: [
-            { role: "user", content: prompt }
-          ],
-        })
-      });
-
-      const data = await response.json();
-      const reviewText = data.content.find(c => c.type === 'text')?.text || '';
+  const approveRecipe = async (recipe) => {
+    if (!accessToken) return;
+    
+    const success = await supabase.approveRecipe(recipe, accessToken);
+    
+    if (success) {
+      // Refresh both lists
+      const updatedPending = await supabase.getPendingRecipes();
+      setPendingRecipes(updatedPending);
       
-      // Extract JSON from response
-      const jsonMatch = reviewText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const review = JSON.parse(jsonMatch[0]);
-        setAIReviewResults(review);
-      } else {
-        setAIReviewResults({
-          score: 75,
-          strengths: ["Recipe submitted"],
-          improvements: [{field: "general", issue: "Review complete", suggestion: "Consider the suggestions above"}],
-          storyTips: reviewText,
-          overallFeedback: "Good start! Review the suggestions above."
-        });
-      }
-    } catch (error) {
-      console.error('AI Review error:', error);
-      setAIReviewResults({
-        score: 70,
-        strengths: ["Recipe received"],
-        improvements: [{field: "general", issue: "Unable to complete full review", suggestion: "Please ensure all fields are filled out"}],
-        overallFeedback: "Please review your recipe for completeness and try again."
-      });
+      const updatedRecipes = await supabase.getRecipes();
+      setRecipes(updatedRecipes);
     }
-
-    setIsReviewingRecipe(false);
   };
 
-  const getFieldHint = (fieldName) => {
-    const hints = {
-      title: "Make it specific! Include the main ingredient or cooking style. Examples: 'Grandma's Sunday Pot Roast' or 'Quick Weeknight Pad Thai'",
-      story: "Share the origin, a memory, or what makes this recipe special. Paint a picture with sensory details - sounds, smells, textures.",
-      ingredients: "Be specific with quantities and preparation. Example: '2 medium onions, finely diced' instead of 'onions'",
-      instructions: "Include temperatures, times, and visual cues. Example: 'Bake at 350°F for 25-30 minutes until golden brown' instead of 'bake until done'",
-      prepTime: "How long to prep ingredients before cooking starts? Be realistic.",
-      cookTime: "Active cooking time on stove/in oven. Don't include prep time here.",
-      tags: "Help others find your recipe! Include cuisine type, meal type, dietary info, key ingredients."
+  const rejectRecipe = async (recipeId) => {
+    if (!accessToken) return;
+    
+    const success = await supabase.rejectRecipe(recipeId, accessToken);
+    
+    if (success) {
+      const updatedPending = await supabase.getPendingRecipes();
+      setPendingRecipes(updatedPending);
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    
+    const newRecipe = {
+      title: formData.title,
+      author: formData.author,
+      email: formData.email,
+      story: formData.story,
+      prep_time: parseInt(formData.prepTime) || 0,
+      cook_time: parseInt(formData.cookTime) || 0,
+      servings: formData.servings,
+      ingredients: formData.ingredients.split('\n').filter(i => i.trim()),
+      instructions: formData.instructions.split('\n').filter(i => i.trim()),
+      tags: formData.tags.split(',').map(t => t.trim()).filter(t => t),
+      photo: formData.photo,
+      photo_credit: formData.photoCredit,
+      status: 'pending'
     };
-    return hints[fieldName] || '';
+    
+    try {
+      await supabase.submitRecipe(newRecipe);
+      
+      setFormData({
+        title: '', story: '', prepTime: '', cookTime: '', servings: '',
+        ingredients: '', instructions: '', tags: '', author: '', photo: null, photoCredit: '', email: ''
+      });
+      setSuggestedPhotos([]);
+      setShowSubmitForm(false);
+      setShowSuccessMessage(true);
+      setTimeout(() => setShowSuccessMessage(false), 5000);
+    } catch (error) {
+      console.error('Error submitting recipe:', error);
+      alert('There was an error submitting your recipe. Please try again.');
+    }
   };
 
-  const applyAISuggestion = (suggestion) => {
-    // Helper to apply suggestions to form
-    if (suggestion.field === 'title' && suggestion.example) {
-      setFormData({...formData, title: suggestion.example});
-    }
-    // Can expand this for other fields
-  };
+  const filteredRecipes = recipes.filter(recipe =>
+    recipe.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    recipe.tags?.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase())) ||
+    recipe.story?.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   // Stock Photo Functions
   const fetchStockPhotos = async (query, isManualSearch = false) => {
@@ -406,7 +412,6 @@ Format your response as JSON:
     setIsLoadingPhotos(true);
     
     try {
-      // Unsplash API - using public access
       const cleanQuery = encodeURIComponent(query.trim());
       const response = await fetch(
         `https://api.unsplash.com/search/photos?query=${cleanQuery}+food&per_page=9&orientation=landscape`,
@@ -425,7 +430,6 @@ Format your response as JSON:
           setShowStockPhotos(true);
         }
       } else {
-        // Fallback: try generic food search
         const fallbackResponse = await fetch(
           `https://api.unsplash.com/search/photos?query=food+delicious&per_page=9&orientation=landscape`,
           {
@@ -446,33 +450,12 @@ Format your response as JSON:
   };
 
   const selectStockPhoto = (photo) => {
-    // Convert to base64 for consistency with uploaded photos
-    fetch(photo.urls.regular)
-      .then(res => res.blob())
-      .then(blob => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          setFormData({
-            ...formData, 
-            photo: reader.result,
-            photoCredit: `Photo by ${photo.user.name} on Unsplash`,
-            photoUrl: photo.links.html
-          });
-          setShowStockPhotos(false);
-        };
-        reader.readAsDataURL(blob);
-      })
-      .catch(err => {
-        console.error('Error loading photo:', err);
-        // Fallback: use URL directly
-        setFormData({
-          ...formData,
-          photo: photo.urls.regular,
-          photoCredit: `Photo by ${photo.user.name} on Unsplash`,
-          photoUrl: photo.links.html
-        });
-        setShowStockPhotos(false);
-      });
+    setFormData({
+      ...formData,
+      photo: photo.urls.regular,
+      photoCredit: `Photo by ${photo.user.name} on Unsplash`
+    });
+    setShowStockPhotos(false);
   };
 
   const handleManualPhotoSearch = () => {
@@ -481,61 +464,22 @@ Format your response as JSON:
     }
   };
 
-  const approveRecipe = async (recipe) => {
-    const updatedPending = pendingRecipes.filter(r => r.id !== recipe.id);
-    await savePendingRecipes(updatedPending);
-    
-    const approvedRecipe = { ...recipe, status: 'approved', approvedAt: new Date().toISOString() };
-    delete approvedRecipe.email; // Remove email before making public
-    
-    const updatedRecipes = [...recipes, approvedRecipe];
-    await saveRecipes(updatedRecipes);
-    await trackEvent('recipe_approved', { recipeId: recipe.id, title: recipe.title });
-  };
-
-  const rejectRecipe = async (recipeId) => {
-    const updatedPending = pendingRecipes.filter(r => r.id !== recipeId);
-    await savePendingRecipes(updatedPending);
-    await trackEvent('recipe_rejected', { recipeId });
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    const newRecipe = {
-      id: Date.now().toString(),
-      ...formData,
-      ingredients: formData.ingredients.split('\n').filter(i => i.trim()),
-      instructions: formData.instructions.split('\n').filter(i => i.trim()),
-      tags: formData.tags.split(',').map(t => t.trim()).filter(t => t),
-      createdAt: new Date().toISOString(),
-      status: 'pending'
+  const getFieldHint = (fieldName) => {
+    const hints = {
+      title: "Make it specific! Include the main ingredient or cooking style. Examples: 'Grandma's Sunday Pot Roast' or 'Quick Weeknight Pad Thai'",
+      story: "Share the origin, a memory, or what makes this recipe special. Paint a picture with sensory details - sounds, smells, textures.",
+      ingredients: "Be specific with quantities and preparation. Example: '2 medium onions, finely diced' instead of 'onions'",
+      instructions: "Include temperatures, times, and visual cues. Example: 'Bake at 350°F for 25-30 minutes until golden brown' instead of 'bake until done'",
+      tags: "Help others find your recipe! Include cuisine type, meal type, dietary info, key ingredients."
     };
-    
-    const updatedPending = [...pendingRecipes, newRecipe];
-    await savePendingRecipes(updatedPending);
-    await trackEvent('recipe_submitted', { recipeId: newRecipe.id, title: newRecipe.title });
-    
-    setFormData({
-      title: '', story: '', prepTime: '', cookTime: '', servings: '',
-      ingredients: '', instructions: '', tags: '', author: '', photo: null, email: ''
-    });
-    setShowSubmitForm(false);
-    setShowSuccessMessage(true);
-    setTimeout(() => setShowSuccessMessage(false), 5000);
+    return hints[fieldName] || '';
   };
-
-  const filteredRecipes = recipes.filter(recipe =>
-    recipe.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    recipe.tags.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase())) ||
-    recipe.story.toLowerCase().includes(searchQuery.toLowerCase())
-  );
 
   const RecipeCard = ({ recipe }) => (
     <div 
       onClick={() => {
         setSelectedRecipe(recipe);
         setView('detail');
-        trackEvent('recipe_viewed', { recipeId: recipe.id, title: recipe.title });
       }}
       className="recipe-card"
     >
@@ -546,13 +490,13 @@ Format your response as JSON:
       )}
       <div className="recipe-card-content">
         <h3>{recipe.title}</h3>
-        <p className="story-preview">{recipe.story.substring(0, 120)}...</p>
+        <p className="story-preview">{recipe.story?.substring(0, 120)}...</p>
         <div className="recipe-meta">
-          <span><Clock size={14} /> {recipe.prepTime + recipe.cookTime} min</span>
+          <span><Clock size={14} /> {(recipe.prep_time || 0) + (recipe.cook_time || 0)} min</span>
           <span><Users size={14} /> {recipe.servings}</span>
         </div>
         <div className="tags">
-          {recipe.tags.map((tag, i) => (
+          {recipe.tags?.map((tag, i) => (
             <span key={i} className="tag">{tag}</span>
           ))}
         </div>
@@ -1079,45 +1023,15 @@ Format your response as JSON:
           margin-top: 4px;
         }
 
-        .file-input {
-          padding: 8px !important;
-          font-size: 14px !important;
-        }
-
-        .photo-preview {
-          margin-top: 16px;
-          position: relative;
-          border-radius: 8px;
-          overflow: hidden;
-          border: 2px solid #e8e6e1;
-        }
-
-        .photo-preview img {
-          width: 100%;
-          height: 240px;
-          object-fit: cover;
-          display: block;
-        }
-
-        .remove-photo {
-          position: absolute;
-          top: 12px;
-          right: 12px;
-          background: rgba(0,0,0,0.7);
-          color: white;
-          border: none;
-          padding: 8px 12px;
-          border-radius: 6px;
+        .helper-text-hint {
           font-size: 13px;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          transition: background 0.2s;
-        }
-
-        .remove-photo:hover {
-          background: rgba(0,0,0,0.9);
+          color: #666;
+          margin-top: 8px;
+          padding: 8px 12px;
+          background: #f8f5f0;
+          border-radius: 4px;
+          border-left: 3px solid #8b3a3a;
+          line-height: 1.5;
         }
 
         .form-actions {
@@ -1160,388 +1074,7 @@ Format your response as JSON:
           background: #e8e6e1;
         }
 
-        .btn-ai-review {
-          flex: 1;
-          padding: 14px;
-          border: 2px solid #8b3a3a;
-          background: white;
-          color: #8b3a3a;
-          border-radius: 6px;
-          font-family: 'Karla', sans-serif;
-          font-size: 15px;
-          font-weight: 500;
-          cursor: pointer;
-          transition: all 0.2s;
-        }
-
-        .btn-ai-review:hover:not(:disabled) {
-          background: #8b3a3a;
-          color: white;
-        }
-
-        .btn-ai-review:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-
-        .helper-text-hint {
-          font-size: 13px;
-          color: #666;
-          margin-top: 8px;
-          padding: 8px 12px;
-          background: #f8f5f0;
-          border-radius: 4px;
-          border-left: 3px solid #8b3a3a;
-          line-height: 1.5;
-        }
-
-        .empty-state {
-          text-align: center;
-          padding: 80px 24px;
-        }
-
-        .empty-state h3 {
-          font-family: 'Crimson Pro', serif;
-          font-size: 28px;
-          color: #1a1a1a;
-          margin-bottom: 12px;
-        }
-
-        .empty-state p {
-          color: #666;
-          margin-bottom: 24px;
-        }
-
-        .success-message {
-          position: fixed;
-          top: 100px;
-          left: 50%;
-          transform: translateX(-50%);
-          background: #2d5016;
-          color: white;
-          padding: 16px 24px;
-          border-radius: 8px;
-          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-          z-index: 300;
-          animation: slideDown 0.3s ease;
-        }
-
-        @keyframes slideDown {
-          from {
-            opacity: 0;
-            transform: translateX(-50%) translateY(-20px);
-          }
-          to {
-            opacity: 1;
-            transform: translateX(-50%) translateY(0);
-          }
-        }
-
-        .success-message h3 {
-          font-family: 'Crimson Pro', serif;
-          font-size: 18px;
-          margin-bottom: 4px;
-        }
-
-        .success-message p {
-          font-size: 14px;
-          opacity: 0.9;
-        }
-
-        .admin-panel {
-          max-width: 1200px;
-          margin: 0 auto;
-          padding: 60px 24px;
-        }
-
-        .admin-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 40px;
-        }
-
-        .admin-header h2 {
-          font-family: 'Crimson Pro', serif;
-          font-size: 36px;
-          font-weight: 600;
-        }
-
-        .stats-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-          gap: 24px;
-          margin-bottom: 40px;
-        }
-
-        .stat-card {
-          background: white;
-          border: 1px solid #e8e6e1;
-          border-radius: 8px;
-          padding: 24px;
-        }
-
-        .stat-card h4 {
-          font-size: 14px;
-          color: #666;
-          margin-bottom: 8px;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-        }
-
-        .stat-card .stat-value {
-          font-family: 'Crimson Pro', serif;
-          font-size: 36px;
-          font-weight: 600;
-          color: #1a1a1a;
-        }
-
-        .pending-list {
-          display: flex;
-          flex-direction: column;
-          gap: 24px;
-        }
-
-        .pending-recipe {
-          background: white;
-          border: 2px solid #f4f2ed;
-          border-radius: 8px;
-          padding: 24px;
-          display: grid;
-          grid-template-columns: 120px 1fr auto;
-          gap: 24px;
-          align-items: start;
-        }
-
-        .pending-recipe img {
-          width: 120px;
-          height: 120px;
-          object-fit: cover;
-          border-radius: 6px;
-        }
-
-        .pending-recipe-content h3 {
-          font-family: 'Crimson Pro', serif;
-          font-size: 24px;
-          margin-bottom: 8px;
-        }
-
-        .pending-recipe-meta {
-          font-size: 14px;
-          color: #666;
-          margin-bottom: 12px;
-        }
-
-        .pending-recipe-actions {
-          display: flex;
-          gap: 12px;
-        }
-
-        .btn-approve {
-          background: #2d5016;
-          color: white;
-          border: none;
-          padding: 10px 20px;
-          border-radius: 6px;
-          font-family: 'Karla', sans-serif;
-          font-weight: 500;
-          cursor: pointer;
-          transition: background 0.2s;
-        }
-
-        .btn-approve:hover {
-          background: #1f3610;
-        }
-
-        .btn-reject {
-          background: #f4f2ed;
-          color: #666;
-          border: none;
-          padding: 10px 20px;
-          border-radius: 6px;
-          font-family: 'Karla', sans-serif;
-          font-weight: 500;
-          cursor: pointer;
-          transition: background 0.2s;
-        }
-
-        .btn-reject:hover {
-          background: #e8e6e1;
-        }
-
-        .admin-toggle {
-          position: fixed;
-          bottom: 24px;
-          right: 24px;
-          background: #8b3a3a;
-          color: white;
-          border: none;
-          width: 56px;
-          height: 56px;
-          border-radius: 50%;
-          font-size: 20px;
-          cursor: pointer;
-          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-          transition: all 0.2s;
-          z-index: 100;
-        }
-
-        .admin-toggle:hover {
-          transform: scale(1.1);
-          box-shadow: 0 6px 16px rgba(0,0,0,0.2);
-        }
-
-        .password-prompt {
-          background: white;
-          border-radius: 12px;
-          max-width: 400px;
-          width: 100%;
-        }
-
-        .ai-review-modal {
-          background: white;
-          border-radius: 12px;
-          max-width: 700px;
-          width: 100%;
-          max-height: 90vh;
-          overflow-y: auto;
-        }
-
-        .ai-review-content {
-          padding: 0;
-        }
-
-        .ai-score-section {
-          padding: 40px 32px;
-          text-align: center;
-          background: linear-gradient(135deg, #f8f5f0 0%, #ffffff 100%);
-          border-bottom: 1px solid #e8e6e1;
-        }
-
-        .ai-score-circle {
-          width: 140px;
-          height: 140px;
-          border-radius: 50%;
-          margin: 0 auto 20px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          position: relative;
-        }
-
-        .ai-score-inner {
-          width: 110px;
-          height: 110px;
-          background: white;
-          border-radius: 50%;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-        }
-
-        .ai-score-number {
-          font-family: 'Crimson Pro', serif;
-          font-size: 48px;
-          font-weight: 600;
-          color: #8b3a3a;
-          line-height: 1;
-        }
-
-        .ai-score-label {
-          font-size: 13px;
-          color: #666;
-          text-transform: uppercase;
-          letter-spacing: 1px;
-          margin-top: 4px;
-        }
-
-        .ai-overall-feedback {
-          font-size: 16px;
-          color: #333;
-          max-width: 500px;
-          margin: 0 auto;
-          line-height: 1.6;
-        }
-
-        .ai-section {
-          padding: 32px;
-          border-bottom: 1px solid #e8e6e1;
-        }
-
-        .ai-section h3 {
-          font-family: 'Crimson Pro', serif;
-          font-size: 22px;
-          font-weight: 600;
-          color: #1a1a1a;
-          margin-bottom: 16px;
-        }
-
-        .ai-list {
-          list-style: none;
-          padding: 0;
-        }
-
-        .ai-list li {
-          padding: 12px 16px;
-          margin-bottom: 8px;
-          background: #f8f5f0;
-          border-radius: 6px;
-          line-height: 1.6;
-          border-left: 3px solid #8b3a3a;
-        }
-
-        .ai-improvements {
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
-        }
-
-        .ai-improvement-item {
-          background: #f8f5f0;
-          padding: 16px;
-          border-radius: 8px;
-          border-left: 4px solid #8b3a3a;
-        }
-
-        .ai-improvement-field {
-          font-size: 12px;
-          text-transform: uppercase;
-          color: #8b3a3a;
-          font-weight: 600;
-          letter-spacing: 0.5px;
-          margin-bottom: 8px;
-        }
-
-        .ai-improvement-issue {
-          font-size: 15px;
-          color: #333;
-          margin-bottom: 8px;
-        }
-
-        .ai-improvement-suggestion {
-          font-size: 14px;
-          color: #666;
-          padding: 12px;
-          background: white;
-          border-radius: 4px;
-          line-height: 1.6;
-        }
-
-        .ai-improvement-suggestion strong {
-          color: #8b3a3a;
-        }
-
-        .ai-story-tips {
-          font-size: 15px;
-          line-height: 1.8;
-          color: #333;
-          padding: 16px;
-          background: #f8f5f0;
-          border-radius: 6px;
-        }
-
-        /* Stock Photos Styles */
+        /* Photo Options */
         .photo-options {
           display: flex;
           align-items: center;
@@ -1650,11 +1183,48 @@ Format your response as JSON:
           color: white;
         }
 
+        .photo-preview {
+          margin-top: 16px;
+          position: relative;
+          border-radius: 8px;
+          overflow: hidden;
+          border: 2px solid #e8e6e1;
+        }
+
+        .photo-preview img {
+          width: 100%;
+          height: 240px;
+          object-fit: cover;
+          display: block;
+        }
+
         .photo-credit {
           font-size: 12px;
           color: #666;
-          margin-top: 8px;
+          padding: 8px 12px;
+          background: #f8f5f0;
           font-style: italic;
+        }
+
+        .remove-photo {
+          position: absolute;
+          top: 12px;
+          right: 12px;
+          background: rgba(0,0,0,0.7);
+          color: white;
+          border: none;
+          padding: 8px 12px;
+          border-radius: 6px;
+          font-size: 13px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          transition: background 0.2s;
+        }
+
+        .remove-photo:hover {
+          background: rgba(0,0,0,0.9);
         }
 
         /* Stock Photos Modal */
@@ -1794,6 +1364,201 @@ Format your response as JSON:
           background: #f8f5f0;
         }
 
+        /* Success Message */
+        .success-message {
+          position: fixed;
+          bottom: 24px;
+          left: 50%;
+          transform: translateX(-50%);
+          background: #2d5a3d;
+          color: white;
+          padding: 16px 32px;
+          border-radius: 8px;
+          font-weight: 500;
+          z-index: 300;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+
+        /* Admin Panel */
+        .admin-panel {
+          position: fixed;
+          top: 0;
+          right: 0;
+          bottom: 0;
+          width: 600px;
+          max-width: 100%;
+          background: white;
+          box-shadow: -4px 0 24px rgba(0,0,0,0.1);
+          z-index: 150;
+          overflow-y: auto;
+        }
+
+        .admin-header {
+          padding: 32px;
+          border-bottom: 1px solid #e8e6e1;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          position: sticky;
+          top: 0;
+          background: white;
+          z-index: 1;
+        }
+
+        .admin-header h2 {
+          font-family: 'Crimson Pro', serif;
+          font-size: 28px;
+          font-weight: 600;
+          color: #1a1a1a;
+        }
+
+        .stats-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 16px;
+          padding: 24px 32px;
+        }
+
+        .stat-card {
+          background: #f8f5f0;
+          padding: 20px;
+          border-radius: 8px;
+          text-align: center;
+        }
+
+        .stat-card h4 {
+          font-size: 12px;
+          text-transform: uppercase;
+          color: #666;
+          margin-bottom: 8px;
+          letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+          font-family: 'Crimson Pro', serif;
+          font-size: 32px;
+          font-weight: 600;
+          color: #8b3a3a;
+        }
+
+        .pending-list {
+          padding: 24px 32px;
+        }
+
+        .pending-recipe {
+          display: grid;
+          grid-template-columns: 120px 1fr auto;
+          gap: 20px;
+          padding: 20px;
+          background: #f8f5f0;
+          border-radius: 8px;
+          margin-bottom: 16px;
+          align-items: start;
+        }
+
+        .pending-recipe img {
+          width: 120px;
+          height: 120px;
+          object-fit: cover;
+          border-radius: 6px;
+        }
+
+        .pending-recipe-content h3 {
+          font-family: 'Crimson Pro', serif;
+          font-size: 20px;
+          font-weight: 600;
+          color: #1a1a1a;
+          margin-bottom: 8px;
+        }
+
+        .pending-recipe-meta {
+          font-size: 13px;
+          color: #666;
+          margin-bottom: 8px;
+        }
+
+        .pending-recipe-actions {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .btn-approve {
+          background: #2d5a3d;
+          color: white;
+          border: none;
+          padding: 10px 20px;
+          border-radius: 6px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: background 0.2s;
+        }
+
+        .btn-approve:hover {
+          background: #234a31;
+        }
+
+        .btn-reject {
+          background: #d45d5d;
+          color: white;
+          border: none;
+          padding: 10px 20px;
+          border-radius: 6px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: background 0.2s;
+        }
+
+        .btn-reject:hover {
+          background: #c04545;
+        }
+
+        .admin-toggle {
+          position: fixed;
+          bottom: 24px;
+          right: 24px;
+          background: #8b3a3a;
+          color: white;
+          border: none;
+          width: 56px;
+          height: 56px;
+          border-radius: 50%;
+          font-size: 20px;
+          cursor: pointer;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+          transition: all 0.2s;
+          z-index: 100;
+        }
+
+        .admin-toggle:hover {
+          transform: scale(1.1);
+          box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+        }
+
+        .password-prompt {
+          background: white;
+          border-radius: 12px;
+          max-width: 400px;
+          width: 100%;
+        }
+
+        .empty-state {
+          text-align: center;
+          padding: 80px 24px;
+        }
+
+        .empty-state h3 {
+          font-family: 'Crimson Pro', serif;
+          font-size: 28px;
+          color: #1a1a1a;
+          margin-bottom: 12px;
+        }
+
+        .empty-state p {
+          color: #666;
+          margin-bottom: 24px;
+        }
+
         @media (max-width: 768px) {
           .hero h1 {
             font-size: 40px;
@@ -1828,6 +1593,14 @@ Format your response as JSON:
           .pending-recipe img {
             width: 100%;
             height: 200px;
+          }
+
+          .stats-grid {
+            grid-template-columns: repeat(2, 1fr);
+          }
+
+          .admin-panel {
+            width: 100%;
           }
         }
       `}</style>
@@ -1886,7 +1659,7 @@ Format your response as JSON:
             </div>
             {recipes.length === 0 ? (
               <div className="empty-state">
-                <ChefHat size={64} color="#8b3a3a" style={{margin: '0 auto 24px'}} />
+                <ChefHat size={64} color="#8b3a3a" style={{margin: '0 auto 24px', display: 'block'}} />
                 <h3>No recipes yet</h3>
                 <p>Be the first to share a recipe with the community!</p>
                 <button className="submit-btn" onClick={() => setShowSubmitForm(true)}>
@@ -1912,6 +1685,15 @@ Format your response as JSON:
             <p className="recipes-count">
               {filteredRecipes.length} {filteredRecipes.length === 1 ? 'recipe' : 'recipes'}
             </p>
+          </div>
+          <div className="search-bar" style={{marginBottom: '40px'}}>
+            <input
+              type="text"
+              placeholder="Search recipes, ingredients, or tags..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            <Search className="search-icon" size={20} />
           </div>
           {filteredRecipes.length === 0 ? (
             <div className="empty-state">
@@ -1946,11 +1728,11 @@ Format your response as JSON:
           <div className="recipe-info">
             <div className="info-item">
               <Clock size={18} />
-              <span>Prep: {selectedRecipe.prepTime} min</span>
+              <span>Prep: {selectedRecipe.prep_time} min</span>
             </div>
             <div className="info-item">
               <Clock size={18} />
-              <span>Cook: {selectedRecipe.cookTime} min</span>
+              <span>Cook: {selectedRecipe.cook_time} min</span>
             </div>
             <div className="info-item">
               <Users size={18} />
@@ -1961,7 +1743,7 @@ Format your response as JSON:
           <div className="recipe-section">
             <h2>Ingredients</h2>
             <ul>
-              {selectedRecipe.ingredients.map((ingredient, i) => (
+              {selectedRecipe.ingredients?.map((ingredient, i) => (
                 <li key={i}>{ingredient}</li>
               ))}
             </ul>
@@ -1970,13 +1752,13 @@ Format your response as JSON:
           <div className="recipe-section">
             <h2>Instructions</h2>
             <ol>
-              {selectedRecipe.instructions.map((step, i) => (
+              {selectedRecipe.instructions?.map((step, i) => (
                 <li key={i}>{step}</li>
               ))}
             </ol>
           </div>
 
-          {selectedRecipe.tags.length > 0 && (
+          {selectedRecipe.tags?.length > 0 && (
             <div className="tags">
               {selectedRecipe.tags.map((tag, i) => (
                 <span key={i} className="tag">{tag}</span>
@@ -2075,7 +1857,6 @@ Format your response as JSON:
                     </label>
                   </div>
 
-                  {/* Auto-suggested photos */}
                   {suggestedPhotos.length > 0 && !formData.photo && (
                     <div className="suggested-photos-section">
                       <h4 className="suggested-photos-title">
@@ -2116,7 +1897,7 @@ Format your response as JSON:
                       <button 
                         type="button"
                         className="remove-photo"
-                        onClick={() => setFormData({...formData, photo: null, photoCredit: null, photoUrl: null})}
+                        onClick={() => setFormData({...formData, photo: null, photoCredit: ''})}
                       >
                         <X size={16} /> Remove
                       </button>
@@ -2212,16 +1993,8 @@ Format your response as JSON:
                 <button type="button" className="btn-secondary" onClick={() => setShowSubmitForm(false)}>
                   Cancel
                 </button>
-                <button 
-                  type="button" 
-                  className="btn-ai-review" 
-                  onClick={reviewRecipeWithAI}
-                  disabled={isReviewingRecipe || !formData.title || !formData.story}
-                >
-                  {isReviewingRecipe ? '🤖 Reviewing...' : '🤖 Get AI Feedback'}
-                </button>
                 <button type="submit" className="btn-primary">
-                  Publish Recipe
+                  Submit Recipe
                 </button>
               </div>
             </form>
@@ -2232,8 +2005,7 @@ Format your response as JSON:
       {/* Success Message */}
       {showSuccessMessage && (
         <div className="success-message">
-          <h3>✓ Recipe Submitted!</h3>
-          <p>Thank you! Your recipe will be reviewed and published within 24 hours.</p>
+          ✅ Thank you! Your recipe will be reviewed and published within 24 hours.
         </div>
       )}
 
@@ -2258,9 +2030,22 @@ Format your response as JSON:
             </div>
           </div>
 
-          <AnalyticsDashboard recipes={recipes} pendingRecipes={pendingRecipes} />
+          <div className="stats-grid">
+            <div className="stat-card">
+              <h4>Total Recipes</h4>
+              <div className="stat-value">{recipes.length}</div>
+            </div>
+            <div className="stat-card">
+              <h4>Pending Review</h4>
+              <div className="stat-value">{pendingRecipes.length}</div>
+            </div>
+            <div className="stat-card">
+              <h4>Approved</h4>
+              <div className="stat-value">{recipes.length}</div>
+            </div>
+          </div>
 
-          <h3 style={{fontFamily: 'Crimson Pro, serif', fontSize: '28px', marginBottom: '24px'}}>
+          <h3 style={{fontFamily: 'Crimson Pro, serif', fontSize: '24px', padding: '0 32px', marginBottom: '16px'}}>
             Pending Recipes ({pendingRecipes.length})
           </h3>
 
@@ -2280,12 +2065,12 @@ Format your response as JSON:
                   <div className="pending-recipe-content">
                     <h3>{recipe.title}</h3>
                     <div className="pending-recipe-meta">
-                      By {recipe.author} • {recipe.email} • Submitted {new Date(recipe.createdAt).toLocaleDateString()}
+                      By {recipe.author} • {recipe.email} • Submitted {new Date(recipe.created_at).toLocaleDateString()}
                     </div>
-                    <p style={{marginBottom: '12px', lineHeight: '1.6'}}>{recipe.story.substring(0, 200)}...</p>
+                    <p style={{marginBottom: '12px', lineHeight: '1.6'}}>{recipe.story?.substring(0, 200)}...</p>
                     <div style={{fontSize: '14px', color: '#666'}}>
-                      <div>Time: {recipe.prepTime}min prep + {recipe.cookTime}min cook • Serves {recipe.servings}</div>
-                      <div>Tags: {recipe.tags.join(', ') || 'None'}</div>
+                      <div>Time: {recipe.prep_time}min prep + {recipe.cook_time}min cook • Serves {recipe.servings}</div>
+                      <div>Tags: {recipe.tags?.join(', ') || 'None'}</div>
                     </div>
                   </div>
                   <div className="pending-recipe-actions">
@@ -2375,90 +2160,6 @@ Format your response as JSON:
         </div>
       )}
 
-      {/* AI Review Results Modal */}
-      {showAIReview && aiReviewResults && (
-        <div className="form-overlay" onClick={(e) => {
-          if (e.target.className === 'form-overlay') {
-            setShowAIReview(false);
-          }
-        }}>
-          <div className="ai-review-modal">
-            <div className="form-header">
-              <h2>🤖 AI Recipe Review</h2>
-              <button className="close-btn" onClick={() => setShowAIReview(false)}>
-                <X size={24} />
-              </button>
-            </div>
-            
-            <div className="ai-review-content">
-              {/* Score */}
-              <div className="ai-score-section">
-                <div className="ai-score-circle" style={{
-                  background: `conic-gradient(#8b3a3a ${aiReviewResults.score}%, #f4f2ed ${aiReviewResults.score}%)`
-                }}>
-                  <div className="ai-score-inner">
-                    <div className="ai-score-number">{aiReviewResults.score}</div>
-                    <div className="ai-score-label">Score</div>
-                  </div>
-                </div>
-                <p className="ai-overall-feedback">{aiReviewResults.overallFeedback}</p>
-              </div>
-
-              {/* Strengths */}
-              {aiReviewResults.strengths && aiReviewResults.strengths.length > 0 && (
-                <div className="ai-section">
-                  <h3>✅ Strengths</h3>
-                  <ul className="ai-list strengths-list">
-                    {aiReviewResults.strengths.map((strength, i) => (
-                      <li key={i}>{strength}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* Improvements */}
-              {aiReviewResults.improvements && aiReviewResults.improvements.length > 0 && (
-                <div className="ai-section">
-                  <h3>💡 Suggested Improvements</h3>
-                  <div className="ai-improvements">
-                    {aiReviewResults.improvements.map((improvement, i) => (
-                      <div key={i} className="ai-improvement-item">
-                        <div className="ai-improvement-field">{improvement.field}</div>
-                        <div className="ai-improvement-issue">{improvement.issue}</div>
-                        <div className="ai-improvement-suggestion">
-                          <strong>Try:</strong> {improvement.suggestion}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Story Tips */}
-              {aiReviewResults.storyTips && (
-                <div className="ai-section">
-                  <h3>📖 Story Enhancement Tips</h3>
-                  <p className="ai-story-tips">{aiReviewResults.storyTips}</p>
-                </div>
-              )}
-
-              <div style={{padding: '24px', borderTop: '1px solid #e8e6e1', background: '#f8f5f0'}}>
-                <p style={{fontSize: '14px', color: '#666', marginBottom: '16px'}}>
-                  Ready to submit? Make improvements and submit, or submit as-is!
-                </p>
-                <button 
-                  className="btn-primary" 
-                  style={{width: '100%'}}
-                  onClick={() => setShowAIReview(false)}
-                >
-                  Continue Editing
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Stock Photos Browser Modal */}
       {showStockPhotos && (
         <div className="form-overlay" onClick={(e) => {
@@ -2525,68 +2226,6 @@ Format your response as JSON:
           </div>
         </div>
       )}
-    </div>
-  );
-};
-
-const AnalyticsDashboard = ({ recipes, pendingRecipes }) => {
-  const [analytics, setAnalytics] = React.useState([]);
-
-  React.useEffect(() => {
-    const loadAnalytics = async () => {
-      try {
-        const result = await window.storage.get('analytics-events');
-        if (result && result.value) {
-          setAnalytics(JSON.parse(result.value));
-        }
-      } catch (error) {
-        console.log('No analytics data');
-      }
-    };
-    loadAnalytics();
-  }, []);
-
-  const totalViews = analytics.filter(e => e.type === 'recipe_viewed').length;
-  const totalSubmissions = analytics.filter(e => e.type === 'recipe_submitted').length;
-  const totalApprovals = analytics.filter(e => e.type === 'recipe_approved').length;
-  
-  const last7Days = analytics.filter(e => {
-    const eventDate = new Date(e.timestamp);
-    const weekAgo = new Date();
-    weekAgo.setDate(weekAgo.getDate() - 7);
-    return eventDate >= weekAgo;
-  });
-
-  const viewsLast7Days = last7Days.filter(e => e.type === 'recipe_viewed').length;
-
-  return (
-    <div className="stats-grid">
-      <div className="stat-card">
-        <h4>Total Recipes</h4>
-        <div className="stat-value">{recipes.length}</div>
-      </div>
-      <div className="stat-card">
-        <h4>Pending Review</h4>
-        <div className="stat-value">{pendingRecipes.length}</div>
-      </div>
-      <div className="stat-card">
-        <h4>Total Views</h4>
-        <div className="stat-value">{totalViews}</div>
-      </div>
-      <div className="stat-card">
-        <h4>Views (7 days)</h4>
-        <div className="stat-value">{viewsLast7Days}</div>
-      </div>
-      <div className="stat-card">
-        <h4>Total Submissions</h4>
-        <div className="stat-value">{totalSubmissions}</div>
-      </div>
-      <div className="stat-card">
-        <h4>Approval Rate</h4>
-        <div className="stat-value">
-          {totalSubmissions > 0 ? Math.round((totalApprovals / totalSubmissions) * 100) : 0}%
-        </div>
-      </div>
     </div>
   );
 };
