@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Plus, ChefHat, Clock, Users, BookOpen, X, LogOut, Sparkles, DollarSign, Lock, ArrowRight, Check } from 'lucide-react';
+import { Search, Plus, ChefHat, Clock, Users, BookOpen, X, LogOut, Sparkles, DollarSign, Lock, ArrowRight, Check, Menu } from 'lucide-react';
 
 // REPLACE THESE WITH YOUR SUPABASE KEYS
 const SUPABASE_URL = 'https://tkwpaqauxtpvflzpydfn.supabase.co';
@@ -199,6 +199,7 @@ const BoilBakeFry = () => {
   const [creatorEmail, setCreatorEmail] = useState('');
   const [creatorSubmitted, setCreatorSubmitted] = useState(false);
   const [creatorLoading, setCreatorLoading] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   
   const [formData, setFormData] = useState({
     title: '',
@@ -1768,24 +1769,390 @@ const BoilBakeFry = () => {
           margin-bottom: 24px;
         }
 
+        /* Mobile Menu */
+        .mobile-menu-btn {
+          display: none;
+          background: none;
+          border: none;
+          padding: 8px;
+          cursor: pointer;
+          color: #1a1a1a;
+        }
+
+        .mobile-menu-overlay {
+          display: none;
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(0,0,0,0.5);
+          z-index: 199;
+        }
+
+        .mobile-menu {
+          display: none;
+          position: fixed;
+          top: 0;
+          right: 0;
+          bottom: 0;
+          width: 280px;
+          max-width: 85%;
+          background: white;
+          z-index: 200;
+          transform: translateX(100%);
+          transition: transform 0.3s ease;
+          box-shadow: -4px 0 24px rgba(0,0,0,0.15);
+        }
+
+        .mobile-menu.open {
+          transform: translateX(0);
+        }
+
+        .mobile-menu-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 20px;
+          border-bottom: 1px solid #e8e6e1;
+        }
+
+        .mobile-menu-header .logo {
+          font-size: 22px;
+        }
+
+        .mobile-menu-close {
+          background: none;
+          border: none;
+          padding: 8px;
+          cursor: pointer;
+          color: #666;
+        }
+
+        .mobile-menu-nav {
+          padding: 16px 0;
+        }
+
+        .mobile-menu-nav button {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          width: 100%;
+          padding: 16px 24px;
+          background: none;
+          border: none;
+          font-family: 'Karla', sans-serif;
+          font-size: 16px;
+          color: #1a1a1a;
+          cursor: pointer;
+          text-align: left;
+          transition: background 0.2s;
+        }
+
+        .mobile-menu-nav button:hover {
+          background: #f8f5f0;
+        }
+
+        .mobile-menu-nav button.active {
+          color: #8b3a3a;
+          background: #faf8f5;
+          border-left: 3px solid #8b3a3a;
+        }
+
+        .mobile-menu-nav .submit-btn-mobile {
+          margin: 16px 20px;
+          background: #8b3a3a;
+          color: white;
+          border-radius: 8px;
+          justify-content: center;
+        }
+
+        .mobile-menu-nav .submit-btn-mobile:hover {
+          background: #6f2e2e;
+        }
+
         @media (max-width: 768px) {
-          .hero h1 {
-            font-size: 40px;
+          .mobile-menu-btn {
+            display: block;
+          }
+
+          .mobile-menu-overlay.open {
+            display: block;
+          }
+
+          .mobile-menu {
+            display: block;
+          }
+        }
+
+        /* ============================================
+           MOBILE RESPONSIVE STYLES
+           ============================================ */
+        
+        /* Tablet breakpoint */
+        @media (max-width: 1024px) {
+          .recipes-grid {
+            grid-template-columns: repeat(2, 1fr);
+            gap: 24px;
           }
           
+          .recipe-info {
+            gap: 24px;
+            flex-wrap: wrap;
+          }
+        }
+
+        /* Mobile breakpoint */
+        @media (max-width: 768px) {
+          /* Header - Mobile Navigation */
+          .header-content {
+            padding: 0 16px;
+            height: 64px;
+          }
+
+          .logo {
+            font-size: 22px;
+          }
+
+          .nav {
+            gap: 8px;
+          }
+
+          .nav button {
+            font-size: 13px;
+            padding: 6px 0;
+          }
+
+          .nav button:not(.submit-btn) {
+            display: none;
+          }
+
+          .submit-btn {
+            padding: 8px 14px !important;
+            font-size: 13px;
+          }
+
+          .submit-btn span {
+            display: none;
+          }
+
+          /* Hero Section */
+          .hero {
+            padding: 48px 16px;
+          }
+
+          .hero h1 {
+            font-size: 32px;
+            margin-bottom: 12px;
+          }
+
+          .hero p {
+            font-size: 16px;
+            margin-bottom: 28px;
+          }
+
+          .search-bar {
+            max-width: 100%;
+          }
+
+          .search-bar input {
+            padding: 14px 44px 14px 16px;
+            font-size: 16px; /* Prevents iOS zoom on focus */
+          }
+
+          /* Recipe Grid */
+          .recipes-container {
+            padding: 32px 16px;
+          }
+
+          .recipes-header {
+            margin-bottom: 24px;
+          }
+
+          .recipes-header h2 {
+            font-size: 28px;
+          }
+
           .recipes-grid {
             grid-template-columns: 1fr;
+            gap: 20px;
           }
-          
+
+          /* Recipe Cards */
+          .recipe-card-image {
+            height: 200px;
+          }
+
+          .recipe-card-content {
+            padding: 16px;
+          }
+
+          .recipe-card h3 {
+            font-size: 20px;
+            margin-bottom: 8px;
+          }
+
+          .story-preview {
+            font-size: 14px;
+            margin-bottom: 12px;
+          }
+
+          .recipe-meta {
+            gap: 16px;
+            margin-bottom: 10px;
+          }
+
+          .tags {
+            gap: 6px;
+          }
+
+          .tag {
+            padding: 3px 10px;
+            font-size: 12px;
+          }
+
+          /* Recipe Detail Page */
+          .recipe-detail {
+            padding: 24px 16px;
+          }
+
+          .recipe-detail-image {
+            height: 280px;
+            margin-bottom: 24px;
+            border-radius: 8px;
+          }
+
+          .back-btn {
+            margin-bottom: 20px;
+          }
+
+          .recipe-detail h1 {
+            font-size: 28px;
+            margin-bottom: 12px;
+          }
+
+          .recipe-detail .author {
+            margin-bottom: 24px;
+          }
+
+          .recipe-detail .story {
+            font-size: 16px;
+            line-height: 1.7;
+            margin-bottom: 28px;
+            padding-left: 16px;
+          }
+
+          .recipe-info {
+            flex-direction: column;
+            gap: 16px;
+            padding: 20px 0;
+            margin-bottom: 28px;
+          }
+
+          .info-item {
+            justify-content: flex-start;
+          }
+
+          .recipe-section {
+            margin-bottom: 28px;
+          }
+
+          .recipe-section h2 {
+            font-size: 22px;
+            margin-bottom: 16px;
+          }
+
+          .recipe-section li {
+            padding: 10px 0;
+            font-size: 15px;
+          }
+
+          .recipe-section ol li {
+            padding: 16px 0 16px 44px;
+          }
+
+          .recipe-section ol li::before {
+            width: 28px;
+            height: 28px;
+            font-size: 13px;
+            top: 16px;
+          }
+
+          /* Form Overlay & Container */
+          .form-overlay {
+            padding: 0;
+            align-items: flex-end;
+          }
+
+          .form-container {
+            border-radius: 16px 16px 0 0;
+            max-height: 95vh;
+          }
+
+          .form-header {
+            padding: 20px 16px 16px;
+          }
+
+          .form-header h2 {
+            font-size: 24px;
+            padding-right: 40px;
+          }
+
+          .close-btn {
+            top: 20px;
+            right: 16px;
+          }
+
+          .form-content {
+            padding: 20px 16px;
+          }
+
+          .guidelines {
+            padding: 16px;
+            font-size: 13px;
+          }
+
+          .guidelines h3 {
+            font-size: 16px;
+          }
+
+          .form-group {
+            margin-bottom: 20px;
+          }
+
+          .form-group label {
+            font-size: 14px;
+          }
+
+          .form-group input,
+          .form-group textarea {
+            padding: 14px 12px;
+            font-size: 16px; /* Prevents iOS zoom */
+            border-radius: 8px;
+          }
+
           .form-row {
             grid-template-columns: 1fr;
+            gap: 0;
           }
 
-          .suggested-photos-grid,
-          .stock-photos-grid {
-            grid-template-columns: repeat(2, 1fr);
+          .helper-text-hint {
+            font-size: 12px;
+            padding: 8px 10px;
           }
 
+          .form-actions {
+            padding: 16px;
+            flex-direction: column;
+            gap: 10px;
+          }
+
+          .form-actions button {
+            padding: 16px;
+            font-size: 16px;
+          }
+
+          /* Photo Options */
           .photo-options {
             flex-direction: column;
             align-items: stretch;
@@ -1795,22 +2162,333 @@ const BoilBakeFry = () => {
             display: none;
           }
 
+          .btn-stock-photos,
+          .btn-upload-photo {
+            width: 100%;
+            text-align: center;
+            padding: 14px 20px;
+          }
+
+          .suggested-photos-grid {
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+          }
+
+          .photo-preview img {
+            height: 200px;
+          }
+
+          /* Stock Photos Modal */
+          .stock-photos-modal {
+            border-radius: 16px 16px 0 0;
+            max-height: 95vh;
+          }
+
+          .stock-photos-search {
+            padding: 16px;
+            flex-direction: column;
+          }
+
+          .stock-photos-search input {
+            font-size: 16px;
+          }
+
+          .stock-photos-search button {
+            width: 100%;
+            padding: 14px;
+          }
+
+          .stock-photos-grid {
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            padding: 16px;
+          }
+
+          .stock-photos-footer {
+            padding: 12px 16px;
+          }
+
+          /* Admin Panel */
+          .admin-panel {
+            width: 100%;
+          }
+
+          .admin-header {
+            padding: 20px 16px;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 16px;
+          }
+
+          .admin-header h2 {
+            font-size: 22px;
+          }
+
+          .admin-header > div:last-child {
+            width: 100%;
+            justify-content: flex-end;
+          }
+
+          .stats-grid {
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            padding: 16px;
+          }
+
+          .stat-card {
+            padding: 14px 10px;
+          }
+
+          .stat-card h4 {
+            font-size: 10px;
+          }
+
+          .stat-value {
+            font-size: 24px;
+          }
+
+          .pending-list {
+            padding: 16px;
+          }
+
           .pending-recipe {
             grid-template-columns: 1fr;
+            padding: 16px;
+            gap: 16px;
           }
 
           .pending-recipe img {
             width: 100%;
-            height: 200px;
+            height: 180px;
+          }
+
+          .pending-recipe-content h3 {
+            font-size: 18px;
+          }
+
+          .pending-recipe-actions {
+            flex-direction: row;
+          }
+
+          .pending-recipe-actions button {
+            flex: 1;
+          }
+
+          /* Admin Toggle */
+          .admin-toggle {
+            width: 48px;
+            height: 48px;
+            bottom: 16px;
+            right: 16px;
+            font-size: 18px;
+          }
+
+          /* Success Message */
+          .success-message {
+            left: 16px;
+            right: 16px;
+            bottom: 80px;
+            transform: none;
+            text-align: center;
+            padding: 14px 20px;
+            font-size: 14px;
+          }
+
+          /* Login Form */
+          .password-prompt {
+            border-radius: 16px 16px 0 0;
+            max-width: 100%;
+          }
+
+          .password-prompt form {
+            padding: 24px 16px !important;
+          }
+
+          .password-prompt .form-group input {
+            font-size: 16px;
+          }
+
+          /* Subscription Card */
+          .subscription-card {
+            padding: 24px 20px;
+          }
+
+          .subscription-card__title {
+            font-size: 20px;
+          }
+
+          .subscription-card__description {
+            font-size: 14px;
+          }
+
+          .subscription-card__interests {
+            gap: 6px;
+          }
+
+          .interest-btn {
+            padding: 7px 12px;
+            font-size: 12px;
+          }
+
+          .subscription-card__input-row input {
+            padding: 14px;
+            font-size: 16px;
+          }
+
+          /* Creator Signup */
+          .creator-signup {
+            padding: 16px;
+          }
+
+          .creator-signup__content {
+            flex-direction: column;
+            text-align: center;
+          }
+
+          .creator-signup__form {
+            flex-direction: column;
+          }
+
+          .creator-signup__form input {
+            font-size: 16px;
+          }
+
+          .creator-signup__form button {
+            width: 100%;
+          }
+
+          /* Empty State */
+          .empty-state {
+            padding: 48px 16px;
+          }
+
+          .empty-state h3 {
+            font-size: 22px;
+          }
+        }
+
+        /* Small mobile breakpoint */
+        @media (max-width: 380px) {
+          .hero h1 {
+            font-size: 26px;
+          }
+
+          .recipe-detail h1 {
+            font-size: 24px;
           }
 
           .stats-grid {
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: 1fr 1fr;
           }
 
-          .admin-panel {
-            width: 100%;
+          .interest-btn {
+            padding: 6px 10px;
+            font-size: 11px;
           }
+
+          .subscription-card__interests {
+            flex-direction: column;
+          }
+
+          .interest-btn {
+            justify-content: center;
+          }
+        }
+
+        /* Touch-friendly improvements */
+        @media (hover: none) and (pointer: coarse) {
+          .recipe-card:hover {
+            transform: none;
+          }
+
+          .recipe-card:active {
+            transform: scale(0.98);
+          }
+
+          .recipe-card:hover .recipe-card-image img {
+            transform: none;
+          }
+
+          .nav button,
+          .btn-primary,
+          .btn-secondary,
+          .interest-btn,
+          .tag {
+            min-height: 44px;
+            min-width: 44px;
+          }
+
+          .suggested-photo-item:hover {
+            transform: none;
+          }
+
+          .stock-photo-item:hover {
+            transform: none;
+            box-shadow: none;
+          }
+
+          /* Always show overlays on touch devices */
+          .stock-photo-overlay {
+            opacity: 1;
+            background: linear-gradient(to top, rgba(0,0,0,0.7) 0%, transparent 60%);
+          }
+
+          .photo-overlay {
+            opacity: 0;
+          }
+        }
+
+        /* Safe area insets for notched phones */
+        @supports (padding-bottom: env(safe-area-inset-bottom)) {
+          .form-actions {
+            padding-bottom: calc(16px + env(safe-area-inset-bottom));
+          }
+
+          .admin-toggle {
+            bottom: calc(16px + env(safe-area-inset-bottom));
+          }
+
+          .success-message {
+            bottom: calc(80px + env(safe-area-inset-bottom));
+          }
+
+          .form-container,
+          .stock-photos-modal,
+          .password-prompt {
+            padding-bottom: env(safe-area-inset-bottom);
+          }
+        }
+
+        /* Landscape mode adjustments */
+        @media (max-width: 768px) and (orientation: landscape) {
+          .hero {
+            padding: 32px 16px;
+          }
+
+          .hero h1 {
+            font-size: 28px;
+          }
+
+          .form-container,
+          .stock-photos-modal {
+            max-height: 100vh;
+          }
+
+          .recipe-detail-image {
+            height: 200px;
+          }
+        }
+
+        /* Prevent horizontal overflow */
+        .app {
+          overflow-x: hidden;
+        }
+
+        /* Smooth scrolling for iOS */
+        .form-container,
+        .admin-panel,
+        .stock-photos-modal {
+          -webkit-overflow-scrolling: touch;
         }
 
         /* ============================================
@@ -2349,11 +3027,60 @@ const BoilBakeFry = () => {
             </button>
             <button className="submit-btn" onClick={() => setShowSubmitForm(true)}>
               <Plus size={18} />
-              Submit Recipe
+              <span>Submit Recipe</span>
             </button>
           </nav>
+          <button className="mobile-menu-btn" onClick={() => setMobileMenuOpen(true)}>
+            <Menu size={24} />
+          </button>
         </div>
       </header>
+
+      {/* Mobile Menu Overlay */}
+      <div 
+        className={`mobile-menu-overlay ${mobileMenuOpen ? 'open' : ''}`}
+        onClick={() => setMobileMenuOpen(false)}
+      />
+
+      {/* Mobile Menu */}
+      <div className={`mobile-menu ${mobileMenuOpen ? 'open' : ''}`}>
+        <div className="mobile-menu-header">
+          <div className="logo">BoilBakeFry</div>
+          <button className="mobile-menu-close" onClick={() => setMobileMenuOpen(false)}>
+            <X size={24} />
+          </button>
+        </div>
+        <nav className="mobile-menu-nav">
+          <button 
+            className={view === 'home' ? 'active' : ''}
+            onClick={() => { setView('home'); setMobileMenuOpen(false); }}
+          >
+            <ChefHat size={20} />
+            Home
+          </button>
+          <button 
+            className={view === 'browse' ? 'active' : ''}
+            onClick={() => { setView('browse'); setMobileMenuOpen(false); }}
+          >
+            <BookOpen size={20} />
+            Browse Recipes
+          </button>
+          <button 
+            className={view === 'creators' ? 'active' : ''}
+            onClick={() => { setView('creators'); setMobileMenuOpen(false); }}
+          >
+            <DollarSign size={20} />
+            Earn from Recipes
+          </button>
+          <button 
+            className="submit-btn-mobile" 
+            onClick={() => { setShowSubmitForm(true); setMobileMenuOpen(false); }}
+          >
+            <Plus size={20} />
+            Submit Recipe
+          </button>
+        </nav>
+      </div>
 
       {/* Main Content */}
       {view === 'home' && (
