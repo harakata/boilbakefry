@@ -73,7 +73,7 @@ class SupabaseClient {
   // Database operations
   async getRecipes() {
     const response = await fetch(
-      `${this.url}/rest/v1/recipes?order=created_at.desc`,
+      `${this.url}/rest/v1/recipes?order=created_at.desc&limit=2500`,
       { headers: this.headers }
     );
     const data = await response.json();
